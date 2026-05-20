@@ -253,7 +253,7 @@
         <div id="summaryBody"></div>
         <div class="btn-row">
           <button id="copyBtn" class="ghost">Copy URL</button>
-          <button id="visitBtn">Visit sandbox</button>
+          <button id="visitBtn">Open checkout</button>
           <button id="saveBtn" class="ghost">Save as…</button>
           <button id="forkBtn" class="ghost">Fork</button>
         </div>
@@ -764,13 +764,22 @@ function renderSummary(collected) {
     db_instance: r.dbInstanceId,
   };
 
+  const isRealCheckout = /checkout\.aplazo\./.test(checkoutUrl);
+  const checkoutLink = isRealCheckout
+    ? `<a href="${checkoutUrl}" target="_blank" rel="noopener" style="color: var(--accent); text-decoration: underline;">${checkoutUrl}</a>`
+    : `<span style="color: var(--text-dim);">${checkoutUrl}</span>`;
+
   body.innerHTML = `
     <div class="summary-row"><div class="k">Merchant</div><div class="v">${m.commerceName || m.merchantId} <span class="pill">${m.integrationType}</span>${m.branchCreated ? '<span class="pill ok">branch ✓</span>' : ''}</div></div>
-    <div class="summary-row"><div class="k">Sandbox URL</div><div class="v">${d.sandboxBaseUrl}</div></div>
-    <div class="summary-row"><div class="k">Checkout URL</div><div class="v">${checkoutUrl}</div></div>
-    <div class="summary-row"><div class="k">DB instance</div><div class="v">${r.dbInstanceId || '—'}</div></div>
+    <div class="summary-row"><div class="k">Checkout URL</div><div class="v">${checkoutLink} ${isRealCheckout ? '<span class="pill ok">live</span>' : '<span class="pill err">mock</span>'}</div></div>
     <div class="summary-row"><div class="k">Synthetic user</div><div class="v">${c.syntheticUserId || '—'} · ${c.creditUsed ?? 0}/${c.creditLimit ?? 0} MXN</div></div>
     <div class="summary-row"><div class="k">Validation</div><div class="v ${v.allChecksPass ? 'ok' : 'err'}">${checks || '—'}</div></div>
+    <details style="margin-top: 12px;">
+      <summary>Infrastructure details (mock for hackathon)</summary>
+      <div class="summary-row"><div class="k">Sandbox base</div><div class="v" style="color: var(--text-dim);">${d.sandboxBaseUrl} <span class="pill err">mock — not in DNS</span></div></div>
+      <div class="summary-row"><div class="k">DB instance</div><div class="v" style="color: var(--text-dim);">${r.dbInstanceId || '—'} <span class="pill err">mock</span></div></div>
+      <div class="summary-row"><div class="k">Note</div><div class="v" style="color: var(--text-dim); font-size: 12px;">Real RDS/ECS provisioning requires cross-account staging access (post-hackathon). The checkout URL above is a real loan against a real merchant — that's what to click.</div></div>
+    </details>
   `;
   card.style.display = 'block';
 }
