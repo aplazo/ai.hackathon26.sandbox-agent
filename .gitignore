@@ -25,3 +25,4 @@ packaged.yaml
 dist/
 build/
 *.zip
+.claude/
