@@ -273,8 +273,8 @@
 const CONFIG = {
   apiKey:         'YOUR_ANTHROPIC_API_KEY',                              // via 1Password
   model:          'claude-sonnet-4-20250514',
-  backendUrl:     'https://REPLACE-WITH-API-GW-ID.execute-api.us-east-1.amazonaws.com/sandbox',
-  backendToken:   'YOUR_BACKEND_TOKEN',                                  // via Secrets Manager
+  backendUrl:     'https://f0ndmxurpk.execute-api.us-east-1.amazonaws.com/sandbox/sandbox',
+  backendToken:   'YOUR_BACKEND_TOKEN',                                  // local-only — never commit. See infra/scripts/deploy-direct.sh output
   googleClientId: '627677728138-b4b39v4ie3dn3qa0lm6lg01mtcao7otv.apps.googleusercontent.com',
   allowedDomain:  'aplazo.mx',
   maxIterations:  12,
