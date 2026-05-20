@@ -1,0 +1,353 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  SandboxAgent — On-Demand Merchant Sandbox Configurator (PRD v1.6).
+  Stack lives in the POC account (us-east-1). Source-of-truth state (snapshots,
+  ECR images, task definitions) is read cross-account from the main aplazo
+  account 159200192518 / us-west-1 by assuming StagingReaderRoleArn.
+
+Parameters:
+  Stage:
+    Type: String
+    Default: sandbox
+  MockMode:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: When true, Lambdas return realistic mock data and skip AWS calls.
+  BackendToken:
+    Type: String
+    NoEcho: true
+    Description: Bearer token the HTML frontend must send to call the API.
+  Owner:
+    Type: String
+    Default: francisco.lanuza@aplazo.mx
+  ResourceExpires:
+    Type: String
+    Default: '2026-05-30'
+  Environment:
+    Type: String
+    Default: hackathon26
+  Squad:
+    Type: String
+    Default: developer-experience
+    Description: Pulumi-convention squad tag (mandatory on stg/prod/snx resources).
+
+  # Cross-account / cross-region sources (main aplazo account, us-west-1)
+  StagingReaderRoleArn:
+    Type: String
+    Default: ''
+    Description: ARN of the role in account 159200192518 that grants RDS/ECR/ECS read. See infra/scripts/create-staging-reader-role.sh.
+  StagingRegion:
+    Type: String
+    Default: us-west-1
+  StagingDbNamePatterns:
+    Type: CommaDelimitedList
+    Default: 'aplazo-staging-clean,checkout-engine-stg,merchant-api-stg'
+    Description: DB instance identifiers we look up snapshots for (first match wins).
+  EcrRepoPrefix:
+    Type: String
+    Default: 'aplazo/stg-'
+    Description: ECR repository prefix used by Pulumi for staging images.
+  StagingCluster:
+    Type: String
+    Default: aplazo-stg-cluster
+    Description: ECS cluster name in main us-west-1 we clone task definitions from.
+  CoreServices:
+    Type: CommaDelimitedList
+    Default: 'checkout-api,merchant-api,payment-engine'
+  PocAccountId:
+    Type: String
+    Default: ''
+    Description: AWS account ID for this POC stack (used when sharing snapshots from main → POC).
+
+  # Aplazo product endpoints
+  MerchantCreationUrl:
+    Type: String
+    Default: 'https://jwaakdci64.execute-api.us-west-1.amazonaws.com/merchant_creation'
+  BranchUrl:
+    Type: String
+    Default: 'https://merchant.aplazo.net/merchant/create-branch'
+  AplazoApiBase:
+    Type: String
+    Default: 'https://api.aplazo.net'
+
+  # POC us-east-1 networking (required when MockMode=false; Francisco can read his
+  # own POC VPC and pass them here)
+  SubnetIds:
+    Type: String
+    Default: ''
+  SecurityGroupIds:
+    Type: String
+    Default: ''
+  TaskExecutionRoleArn:
+    Type: String
+    Default: ''
+  TaskRoleArn:
+    Type: String
+    Default: ''
+  SandboxDomain:
+    Type: String
+    Default: aplazo.ai
+
+Globals:
+  Function:
+    Runtime: nodejs24.x
+    Timeout: 900
+    MemorySize: 512
+    CodeUri: ../backend/
+    Architectures: [arm64]
+    Environment:
+      Variables:
+        MOCK_MODE: !Ref MockMode
+        BACKEND_TOKEN: !Ref BackendToken
+        DEFAULT_OWNER: !Ref Owner
+        RESOURCE_EXPIRES: !Ref ResourceExpires
+        SQUAD: !Ref Squad
+        SESSIONS_TABLE: !Ref SessionsTable
+        STAGING_READER_ROLE_ARN: !Ref StagingReaderRoleArn
+        STAGING_REGION: !Ref StagingRegion
+        STAGING_DB_NAME_PATTERNS: !Join [',', !Ref StagingDbNamePatterns]
+        ECR_REPO_PREFIX: !Ref EcrRepoPrefix
+        STAGING_CLUSTER: !Ref StagingCluster
+        CORE_SERVICES: !Join [',', !Ref CoreServices]
+        POC_ACCOUNT_ID: !Ref PocAccountId
+        MERCHANT_CREATION_URL: !Ref MerchantCreationUrl
+        BRANCH_URL: !Ref BranchUrl
+        APLAZO_API_BASE: !Ref AplazoApiBase
+        SUBNET_IDS: !Ref SubnetIds
+        SECURITY_GROUP_IDS: !Ref SecurityGroupIds
+        TASK_EXECUTION_ROLE_ARN: !Ref TaskExecutionRoleArn
+        TASK_ROLE_ARN: !Ref TaskRoleArn
+        SANDBOX_DOMAIN: !Ref SandboxDomain
+    Tags:
+      project: sandboxagent
+      team: sandboxagent
+      squad: !Ref Squad
+      owner: !Ref Owner
+      expires: !Ref ResourceExpires
+      environment: !Ref Environment
+
+Conditions:
+  HasStagingReader: !Not [!Equals [!Ref StagingReaderRoleArn, '']]
+
+Resources:
+
+  SandboxApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref Stage
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowHeaders: ['content-type', 'authorization']
+        AllowMethods: [POST, OPTIONS]
+      Tags:
+        project: sandboxagent
+        team: sandboxagent
+        squad: !Ref Squad
+        owner: !Ref Owner
+        expires: !Ref ResourceExpires
+        environment: !Ref Environment
+
+  SessionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: sandboxagent-sessions
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: sessionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: sessionId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - { Key: project,     Value: sandboxagent }
+        - { Key: team,        Value: sandboxagent }
+        - { Key: squad,       Value: !Ref Squad }
+        - { Key: owner,       Value: !Ref Owner }
+        - { Key: expires,     Value: !Ref ResourceExpires }
+        - { Key: environment, Value: !Ref Environment }
+
+  ResolveSnapshotConfigFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: sandboxagent-resolve-snapshot-config
+      Handler: lambdas/resolve_snapshot_config/index.handler
+      Policies:
+        - !If
+          - HasStagingReader
+          - Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Ref StagingReaderRoleArn
+          - !Ref AWS::NoValue
+        - Statement:
+            - Effect: Allow
+              Action: [rds:DescribeDBSnapshots, rds:DescribeDBInstances]
+              Resource: '*'
+            - Effect: Allow
+              Action: [ecr:DescribeImages, ecr:DescribeRepositories, ecr:ListImages]
+              Resource: '*'
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SandboxApi
+            Method: POST
+            Path: /sandbox/resolve-snapshot
+
+  RestoreRdsSnapshotFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: sandboxagent-restore-rds-snapshot
+      Handler: lambdas/restore_rds_snapshot/index.handler
+      Timeout: 900
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds:CopyDBSnapshot
+                - rds:RestoreDBInstanceFromDBSnapshot
+                - rds:DescribeDBInstances
+                - rds:DescribeDBSnapshots
+                - rds:AddTagsToResource
+              Resource: '*'
+            - Effect: Allow
+              Action: [kms:DescribeKey, kms:CreateGrant, kms:Decrypt, kms:GenerateDataKey]
+              Resource: '*'
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SandboxApi
+            Method: POST
+            Path: /sandbox/restore-rds
+
+  CreateMerchantFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: sandboxagent-create-merchant
+      Handler: lambdas/create_merchant/index.handler
+      Timeout: 30
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SandboxApi
+            Method: POST
+            Path: /sandbox/create-merchant
+
+  DeployEcsServicesFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: sandboxagent-deploy-ecs-services
+      Handler: lambdas/deploy_ecs_services/index.handler
+      Timeout: 900
+      Policies:
+        - !If
+          - HasStagingReader
+          - Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Ref StagingReaderRoleArn
+          - !Ref AWS::NoValue
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ecs:CreateCluster
+                - ecs:RegisterTaskDefinition
+                - ecs:CreateService
+                - ecs:DescribeServices
+                - ecs:DescribeTaskDefinition
+                - ecs:ListTaskDefinitions
+              Resource: '*'
+            - Effect: Allow
+              Action: iam:PassRole
+              Resource: '*'
+              Condition:
+                StringEquals: { 'iam:PassedToService': ecs-tasks.amazonaws.com }
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SandboxApi
+            Method: POST
+            Path: /sandbox/deploy-ecs
+
+  ConfigureMerchantFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: sandboxagent-configure-merchant
+      Handler: lambdas/configure_merchant/index.handler
+      Timeout: 60
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ecs:DescribeServices
+                - ecs:DescribeTaskDefinition
+                - ecs:RegisterTaskDefinition
+                - ecs:UpdateService
+              Resource: '*'
+            - Effect: Allow
+              Action: iam:PassRole
+              Resource: '*'
+              Condition:
+                StringEquals: { 'iam:PassedToService': ecs-tasks.amazonaws.com }
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SandboxApi
+            Method: POST
+            Path: /sandbox/configure-merchant
+
+  ValidateSandboxFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: sandboxagent-validate-sandbox
+      Handler: lambdas/validate_sandbox/index.handler
+      Timeout: 30
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SandboxApi
+            Method: POST
+            Path: /sandbox/validate-sandbox
+
+  SaveSessionFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: sandboxagent-save-session
+      Handler: lambdas/save_session/index.handler
+      Timeout: 15
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SessionsTable
+      Events:
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SandboxApi
+            Method: POST
+            Path: /sandbox/save-session
+
+Outputs:
+  ApiEndpoint:
+    Description: HTTPS endpoint for SandboxAgent backend (set CONFIG.backendUrl to this + /sandbox)
+    Value: !Sub 'https://${SandboxApi}.execute-api.${AWS::Region}.amazonaws.com'
+  ApiBasePath:
+    Description: Full base for tool calls (use this in CONFIG.backendUrl)
+    Value: !Sub 'https://${SandboxApi}.execute-api.${AWS::Region}.amazonaws.com/sandbox'
+  SessionsTableName:
+    Value: !Ref SessionsTable
+  ResolveSnapshotRoleArn:
+    Description: Role ARN that the StagingReaderRole in the main account must trust (use this in the trust policy)
+    Value: !GetAtt ResolveSnapshotConfigFnRole.Arn
+  DeployEcsRoleArn:
+    Description: Second role ARN that the StagingReaderRole must trust
+    Value: !GetAtt DeployEcsServicesFnRole.Arn

@@ -1,0 +1,31 @@
+# Copy this file to samconfig.toml and fill in real values.
+# samconfig.toml is gitignored.
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "sandboxagent"
+region = "us-east-1"                                  # POC account, us-east-1 (only writable region per Duvan)
+profile = "hackathon-poc"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+resolve_s3 = true
+parameter_overrides = """
+  Stage=sandbox \
+  MockMode=true \
+  BackendToken=REPLACE_WITH_OPENSSL_RAND_HEX_32 \
+  Owner=francisco.lanuza@aplazo.mx \
+  ResourceExpires=2026-05-30 \
+  Environment=hackathon26 \
+  Squad=developer-experience \
+  StagingReaderRoleArn= \
+  StagingRegion=us-west-1 \
+  StagingDbNamePatterns=aplazo-staging-clean,checkout-engine-stg,merchant-api-stg \
+  EcrRepoPrefix=aplazo/stg- \
+  StagingCluster=aplazo-stg-cluster \
+  PocAccountId=REPLACE_WITH_POC_ACCOUNT_ID \
+  MerchantCreationUrl=https://jwaakdci64.execute-api.us-west-1.amazonaws.com/merchant_creation \
+  BranchUrl=https://merchant.aplazo.net/merchant/create-branch \
+  AplazoApiBase=https://api.aplazo.net \
+  SandboxDomain=aplazo.ai
+"""
+tags = "project=sandboxagent team=sandboxagent squad=developer-experience owner=francisco.lanuza@aplazo.mx expires=2026-05-30 environment=hackathon26"
