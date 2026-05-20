@@ -44,6 +44,16 @@ APLAZO_API_BASE="https://api.aplazo.net"
 STAGING_REGION="us-west-1"
 SANDBOX_DOMAIN="aplazo.ai"
 
+# Auth-gated config endpoint secrets — only attached to fetch_config Lambda
+ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-$(cat /tmp/sandboxagent-anthropic-key.txt 2>/dev/null || true)}"
+GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:-627677728138-b4b39v4ie3dn3qa0lm6lg01mtcao7otv.apps.googleusercontent.com}"
+ALLOWED_DOMAIN="${ALLOWED_DOMAIN:-aplazo.mx}"
+MODEL="${MODEL:-claude-sonnet-4-20250514}"
+MAX_ITERATIONS="${MAX_ITERATIONS:-12}"
+if [[ -z "$ANTHROPIC_API_KEY" ]]; then
+  warn "ANTHROPIC_API_KEY not set — fetch_config will return empty apiKey. Put it in /tmp/sandboxagent-anthropic-key.txt"
+fi
+
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BACKEND="$PROJECT_ROOT/backend"
 INFRA="$PROJECT_ROOT/infra"
@@ -140,16 +150,28 @@ LAMBDAS=(
   "configure_merchant:configure-merchant:60"
   "validate_sandbox:validate-sandbox:30"
   "save_session:save-session:15"
+  "fetch_config:config:15"
 )
 
-# Common env vars
-ENV_VARS="MOCK_MODE=${MOCK_MODE},BACKEND_TOKEN=${BACKEND_TOKEN},DEFAULT_OWNER=${OWNER},RESOURCE_EXPIRES=${EXPIRES},SQUAD=${SQUAD},SESSIONS_TABLE=${TABLE_NAME},STAGING_REGION=${STAGING_REGION},STAGING_DB_NAME_PATTERNS=aplazo-staging-clean,EcrRepoPrefix=aplazo/stg-,STAGING_CLUSTER=aplazo-stg-cluster,CORE_SERVICES=checkout-api,merchant-api,payment-engine,POC_ACCOUNT_ID=${ACCOUNT_ID},MERCHANT_CREATION_URL=${MERCHANT_CREATION_URL},BRANCH_URL=${BRANCH_URL},APLAZO_API_BASE=${APLAZO_API_BASE},SANDBOX_DOMAIN=${SANDBOX_DOMAIN}"
-ENV_JSON='{"Variables":{"MOCK_MODE":"'"$MOCK_MODE"'","BACKEND_TOKEN":"'"$BACKEND_TOKEN"'","DEFAULT_OWNER":"'"$OWNER"'","RESOURCE_EXPIRES":"'"$EXPIRES"'","SQUAD":"'"$SQUAD"'","SESSIONS_TABLE":"'"$TABLE_NAME"'","STAGING_REGION":"'"$STAGING_REGION"'","STAGING_DB_NAME_PATTERNS":"aplazo-staging-clean","ECR_REPO_PREFIX":"aplazo/stg-","STAGING_CLUSTER":"aplazo-stg-cluster","CORE_SERVICES":"checkout-api,merchant-api,payment-engine","POC_ACCOUNT_ID":"'"$ACCOUNT_ID"'","MERCHANT_CREATION_URL":"'"$MERCHANT_CREATION_URL"'","BRANCH_URL":"'"$BRANCH_URL"'","APLAZO_API_BASE":"'"$APLAZO_API_BASE"'","SANDBOX_DOMAIN":"'"$SANDBOX_DOMAIN"'"}}'
+# Common env vars (5 AWS-heavy Lambdas — stay in mock until cross-account access is ready)
+ENV_JSON_COMMON='{"Variables":{"MOCK_MODE":"'"$MOCK_MODE"'","BACKEND_TOKEN":"'"$BACKEND_TOKEN"'","DEFAULT_OWNER":"'"$OWNER"'","RESOURCE_EXPIRES":"'"$EXPIRES"'","SQUAD":"'"$SQUAD"'","SESSIONS_TABLE":"'"$TABLE_NAME"'","STAGING_REGION":"'"$STAGING_REGION"'","STAGING_DB_NAME_PATTERNS":"aplazo-staging-clean","ECR_REPO_PREFIX":"aplazo/stg-","STAGING_CLUSTER":"aplazo-stg-cluster","CORE_SERVICES":"checkout-api,merchant-api,payment-engine","POC_ACCOUNT_ID":"'"$ACCOUNT_ID"'","MERCHANT_CREATION_URL":"'"$MERCHANT_CREATION_URL"'","BRANCH_URL":"'"$BRANCH_URL"'","APLAZO_API_BASE":"'"$APLAZO_API_BASE"'","SANDBOX_DOMAIN":"'"$SANDBOX_DOMAIN"'"}}'
+
+# Real-HTTP env vars (create_merchant + validate_sandbox — call real Aplazo APIs,
+# no cross-account AWS needed, so the Visit Sandbox URL works end-to-end)
+ENV_JSON_REAL_HTTP='{"Variables":{"MOCK_MODE":"false","BACKEND_TOKEN":"'"$BACKEND_TOKEN"'","DEFAULT_OWNER":"'"$OWNER"'","RESOURCE_EXPIRES":"'"$EXPIRES"'","SQUAD":"'"$SQUAD"'","MERCHANT_CREATION_URL":"'"$MERCHANT_CREATION_URL"'","BRANCH_URL":"'"$BRANCH_URL"'","APLAZO_API_BASE":"'"$APLAZO_API_BASE"'"}}'
+
+# Special env vars for fetch_config — secrets returned to authenticated clients
+ENV_JSON_CONFIG='{"Variables":{"ANTHROPIC_API_KEY":"'"$ANTHROPIC_API_KEY"'","BACKEND_TOKEN":"'"$BACKEND_TOKEN"'","GOOGLE_CLIENT_ID":"'"$GOOGLE_CLIENT_ID"'","ALLOWED_DOMAIN":"'"$ALLOWED_DOMAIN"'","MODEL":"'"$MODEL"'","MAX_ITERATIONS":"'"$MAX_ITERATIONS"'"}}'
 
 for entry in "${LAMBDAS[@]}"; do
   IFS=':' read -r lambda route timeout <<<"$entry"
   fn_name="${STACK_PREFIX}-${lambda//_/-}"
   handler="lambdas/${lambda}/index.handler"
+  case "$lambda" in
+    fetch_config)                       env_json="$ENV_JSON_CONFIG" ;;
+    create_merchant|validate_sandbox)   env_json="$ENV_JSON_REAL_HTTP" ;;
+    *)                                  env_json="$ENV_JSON_COMMON" ;;
+  esac
 
   log "Lambda: $fn_name"
   if aw lambda get-function --function-name "$fn_name" >/dev/null 2>&1; then
@@ -162,7 +184,7 @@ for entry in "${LAMBDAS[@]}"; do
       --function-name "$fn_name" \
       --handler "$handler" \
       --timeout "$timeout" \
-      --environment "$ENV_JSON" \
+      --environment "$env_json" \
       --output json >/dev/null
     aw lambda wait function-updated --function-name "$fn_name"
     ok "updated"
@@ -176,7 +198,7 @@ for entry in "${LAMBDAS[@]}"; do
       --architectures arm64 \
       --timeout "$timeout" \
       --memory-size 512 \
-      --environment "$ENV_JSON" \
+      --environment "$env_json" \
       --tags "$TAGS_LAMBDA" \
       --output json >/dev/null
     ok "created"

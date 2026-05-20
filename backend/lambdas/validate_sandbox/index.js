@@ -23,6 +23,7 @@ exports.handler = async (event) => {
   let bearer = null;
   let checkoutUrl = null;
 
+  let authHeader = null;
   try {
     const r = await fetch(`${APLAZO_API_BASE}/api/auth`, {
       method: 'POST',
@@ -30,12 +31,15 @@ exports.handler = async (event) => {
       body: JSON.stringify({ apiToken: api_token, merchantId: Number(merchant_id) || merchant_id }),
     });
     const body = await r.json().catch(() => ({}));
-    bearer = body.token || body.access_token || body.bearer || null;
+    authHeader = body.Authorization || body.authorization || null;
+    if (authHeader) {
+      bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+    }
     checks.push({
       name: 'auth_endpoint',
       pass: r.ok && !!bearer,
       statusCode: r.status,
-      detail: r.ok ? 'Bearer token issued' : `auth failed: ${JSON.stringify(body).slice(0, 200)}`,
+      detail: r.ok && bearer ? 'Bearer token issued' : `auth failed: ${JSON.stringify(body).slice(0, 200)}`,
     });
   } catch (e) {
     checks.push({ name: 'auth_endpoint', pass: false, detail: `network error: ${e.message}` });
@@ -43,21 +47,44 @@ exports.handler = async (event) => {
 
   if (bearer) {
     try {
+      const cartId = `sandbox-cart-${synthetic_user_id}-${Date.now()}`;
       const r = await fetch(`${APLAZO_API_BASE}/api/loan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bearer}` },
         body: JSON.stringify({
-          items: [{ name: 'Test Item', price: 500, qty: 1 }],
-          customer: { externalId: synthetic_user_id },
+          totalPrice: 500,
+          shopId: String(merchant_id),
+          cartId,
+          successUrl:  `${sandbox_base_url}/success`,
+          errorUrl:    `${sandbox_base_url}/error`,
+          cartUrl:     `${sandbox_base_url}/cart`,
+          webHookUrl:  `${sandbox_base_url}/webhook`,
+          buyer: {
+            addressLine: 'Av. Reforma 123',
+            email: `${synthetic_user_id}@sandboxagent.aplazo`,
+            firstName: 'Sandbox',
+            lastName: 'Agent',
+            phone: '5500000000',
+          },
+          products: [{
+            count: 1,
+            description: 'SandboxAgent test product',
+            id: 'sku_sandboxagent_001',
+            price: 500,
+            title: 'Test Item',
+          }],
+          discount: { price: 0, title: 'No discount' },
+          shipping: { price: 0, title: 'Standard' },
+          taxes:    { price: 0, title: 'VAT' },
         }),
       });
       const body = await r.json().catch(() => ({}));
-      checkoutUrl = body.checkoutUrl || body.checkout_url || null;
+      checkoutUrl = body.url || body.checkoutUrl || body.checkout_url || body.paymentUrl || null;
       checks.push({
         name: 'loan_creation',
         pass: r.ok && !!checkoutUrl,
         statusCode: r.status,
-        detail: r.ok ? 'Loan created, checkout URL ready' : `loan failed: ${JSON.stringify(body).slice(0, 200)}`,
+        detail: r.ok && checkoutUrl ? `Loan ${body.loanId || ''} created, checkout URL ready` : `loan failed (HTTP ${r.status}): ${JSON.stringify(body).slice(0, 300)}`,
       });
     } catch (e) {
       checks.push({ name: 'loan_creation', pass: false, detail: `network error: ${e.message}` });

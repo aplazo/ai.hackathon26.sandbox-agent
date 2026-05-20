@@ -270,20 +270,25 @@
  * Single-file HTML. ReAct loop against Anthropic API + 7 backend tools.
  * ============================================================ */
 
+/* Public config only — secrets (anthropicApiKey, backendToken) are fetched at
+ * runtime from /sandbox/config after a verified Google sign-in. No secrets
+ * live in this file. */
 const CONFIG = {
-  apiKey:         'YOUR_ANTHROPIC_API_KEY',                              // via 1Password
-  model:          'claude-sonnet-4-20250514',
   backendUrl:     'https://f0ndmxurpk.execute-api.us-east-1.amazonaws.com/sandbox/sandbox',
-  backendToken:   'YOUR_BACKEND_TOKEN',                                  // local-only — never commit. See infra/scripts/deploy-direct.sh output
   googleClientId: '627677728138-b4b39v4ie3dn3qa0lm6lg01mtcao7otv.apps.googleusercontent.com',
   allowedDomain:  'aplazo.mx',
-  maxIterations:  12,
 };
 
+/* Populated by fetchRuntimeConfig() after a successful @aplazo.mx Google
+ * login. Closure-scoped — never written to window/CONFIG/localStorage. */
+let runtimeConfig = null;
+
 /* ============================================================
- * Google SSO gate — restricts access to @aplazo.mx accounts
+ * Google SSO gate — restricts access to @aplazo.mx accounts.
+ * After a verified login, fetch runtime config (anthropicApiKey,
+ * backendToken) from the auth-gated /sandbox/config endpoint.
  * ============================================================ */
-const SESSION_KEY = 'sandboxagent.user';
+const SESSION_KEY = 'sandboxagent.session';
 
 function decodeJwt(token) {
   try {
@@ -293,10 +298,13 @@ function decodeJwt(token) {
   } catch (_) { return null; }
 }
 
-function showLoginError(msg) {
+function showLoginError(msg, kind = 'err') {
   const el = document.getElementById('loginError');
   el.textContent = msg;
-  el.style.display = 'block';
+  el.style.display = msg ? 'block' : 'none';
+  el.style.color = kind === 'info' ? 'var(--text-dim)' : '';
+  el.style.background = kind === 'info' ? 'transparent' : '';
+  el.style.borderColor = kind === 'info' ? 'transparent' : '';
 }
 
 function renderUserChip(user) {
@@ -308,19 +316,35 @@ function renderUserChip(user) {
   `;
   document.getElementById('logoutBtn').addEventListener('click', () => {
     sessionStorage.removeItem(SESSION_KEY);
+    runtimeConfig = null;
     if (window.google?.accounts?.id) window.google.accounts.id.disableAutoSelect();
     location.reload();
   });
 }
 
-function enterApp(user) {
-  sessionStorage.setItem(SESSION_KEY, JSON.stringify(user));
+async function fetchRuntimeConfig(idToken) {
+  const r = await fetch(`${CONFIG.backendUrl}/config`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${idToken}`, 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error ? `${body.error}: ${body.detail || ''}` : `HTTP ${r.status}`);
+  if (!body.anthropicApiKey || !body.backendToken) {
+    throw new Error('Server returned an incomplete config (missing anthropicApiKey or backendToken)');
+  }
+  return body;
+}
+
+function enterApp(user, rc) {
+  runtimeConfig = rc;
+  sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user, runtimeConfig: rc }));
   document.getElementById('loginGate').style.display = 'none';
   document.getElementById('appRoot').style.display = 'block';
   renderUserChip(user);
 }
 
-function handleCredential(response) {
+async function handleCredential(response) {
   const claims = decodeJwt(response.credential);
   if (!claims) { showLoginError('Could not parse Google identity token.'); return; }
   if (!claims.email_verified) { showLoginError('Your Google account is not verified.'); return; }
@@ -328,23 +352,33 @@ function handleCredential(response) {
     showLoginError(`Access restricted to @${CONFIG.allowedDomain} accounts. You signed in as ${claims.email || 'unknown'}.`);
     return;
   }
-  enterApp({
-    email:   claims.email,
-    name:    claims.name,
-    picture: claims.picture,
-    sub:     claims.sub,
-    iat:     claims.iat,
-    exp:     claims.exp,
-  });
+
+  showLoginError('Verifying session and loading runtime config…', 'info');
+  try {
+    const rc = await fetchRuntimeConfig(response.credential);
+    enterApp({
+      email:   claims.email,
+      name:    claims.name,
+      picture: claims.picture,
+      sub:     claims.sub,
+      iat:     claims.iat,
+      exp:     claims.exp,
+    }, rc);
+  } catch (e) {
+    showLoginError(`Could not load runtime config from server: ${e.message}`);
+  }
 }
 
 function initLogin() {
   const cached = sessionStorage.getItem(SESSION_KEY);
   if (cached) {
     try {
-      const user = JSON.parse(cached);
-      if (user.exp && user.exp * 1000 > Date.now() + 60_000) {
-        enterApp(user);
+      const { user, runtimeConfig: rc } = JSON.parse(cached);
+      if (user?.exp && user.exp * 1000 > Date.now() + 60_000 && rc?.anthropicApiKey && rc?.backendToken) {
+        runtimeConfig = rc;
+        document.getElementById('loginGate').style.display = 'none';
+        document.getElementById('appRoot').style.display = 'block';
+        renderUserChip(user);
         return;
       }
     } catch (_) { /* fall through */ }
@@ -583,7 +617,7 @@ async function executeTool(name, input) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${CONFIG.backendToken}`,
+        'Authorization': `Bearer ${runtimeConfig.backendToken}`,
       },
       body: JSON.stringify(input),
     });
@@ -630,13 +664,13 @@ async function callAnthropic(messages) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
-      'x-api-key': CONFIG.apiKey,
+      'x-api-key': runtimeConfig.anthropicApiKey,
       'anthropic-version': '2023-06-01',
       'anthropic-dangerous-direct-browser-access': 'true',
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: CONFIG.model,
+      model: runtimeConfig.model,
       max_tokens: 4096,
       system: SYSTEM_PROMPT,
       tools: TOOLS,
@@ -654,7 +688,7 @@ async function runAgent(initialPrompt) {
   const messages = [{ role: 'user', content: initialPrompt }];
   const collected = {}; // tool name -> last successful output
 
-  for (let i = 0; i < CONFIG.maxIterations; i++) {
+  for (let i = 0; i < runtimeConfig.maxIterations; i++) {
     log(`\n— iteration ${i + 1} —`);
     let resp;
     try {
@@ -797,7 +831,7 @@ $('runBtn').addEventListener('click', async () => {
   const integrationType = $('integrationType').value;
   if (!merchantRef) { toast('Enter a merchant ID or reference', 'err'); return; }
   if (!integrationType) { toast('Select an integration type first', 'err'); return; }
-  if (!CONFIG.apiKey || CONFIG.apiKey.startsWith('YOUR_')) { toast('Set CONFIG.apiKey (Anthropic key) before running', 'err'); return; }
+  if (!runtimeConfig?.anthropicApiKey || !runtimeConfig?.backendToken) { toast('Runtime config not loaded — sign in again', 'err'); return; }
   if (!CONFIG.backendUrl || CONFIG.backendUrl.includes('REPLACE-WITH')) { toast('Set CONFIG.backendUrl after deploying SAM stack', 'err'); return; }
 
   resetStepper();
@@ -858,7 +892,7 @@ $('saveBtn').addEventListener('click', async () => {
   try {
     const res = await fetch(`${CONFIG.backendUrl}/save-session`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${CONFIG.backendToken}` },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${runtimeConfig.backendToken}` },
       body: JSON.stringify({
         sandbox_id: currentSession.sandbox_id,
         merchant_id: currentSession.merchant_id,
