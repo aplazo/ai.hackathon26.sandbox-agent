@@ -331,14 +331,95 @@ open http://localhost:8080/sandboxagent-demo-may2026.html
 
 (Google OAuth requires `http://localhost:8080` to be in the Client ID's authorized origins. Already configured.)
 
-### 5.6 AWS auth
+### 5.6 First-time AWS profile setup
+
+You need an AWS SSO profile named **exactly** `hackathon-poc` — the deploy script and every command in this doc hardcode that name.
+
+#### Option A — Interactive (recommended)
+
+```bash
+aws configure sso
+```
+
+When prompted, answer:
+
+| Prompt | Value |
+| :-- | :-- |
+| **SSO session name** | `aplazo` (or whatever you've used for Aplazo SSO before — any name) |
+| **SSO start URL** | `https://identitycenter.amazonaws.com/ssoins-7223ad900089de27` |
+| **SSO region** | `us-east-1` |
+| **SSO registration scopes** | press Enter (default `sso:account:access`) |
+| (browser opens, authorize the device) | sign in with your `@aplazo.mx` account |
+| **Default client Region** | `us-east-1` |
+| **CLI default output format** | `json` |
+| **Profile name** | `hackathon-poc` (this MUST match exactly) |
+
+When the CLI shows the account picker:
+- Account ID: **`332730082760`** (named "Hackathon 2026" or similar)
+- Role: pick the one with Lambda / IAM / DynamoDB / APIGW write — Francisco used `Hackathon2026` (admin-equivalent in this account)
+
+#### Option B — Manual (faster if you know what you're doing)
+
+Append to `~/.aws/config`:
+
+```ini
+[profile hackathon-poc]
+sso_start_url = https://identitycenter.amazonaws.com/ssoins-7223ad900089de27
+sso_region = us-east-1
+sso_account_id = 332730082760
+sso_role_name = Hackathon2026
+region = us-east-1
+output = json
+```
+
+Then trigger the browser auth:
 
 ```bash
 aws sso login --profile hackathon-poc
-aws sts get-caller-identity --profile hackathon-poc   # should return account 332730082760
 ```
 
-For main account writes (Task A), Francisco needs a separate profile with IAM write rights. Probably `aplazo-apz` if that has sufficient privileges.
+#### Verify the setup
+
+```bash
+aws sts get-caller-identity --profile hackathon-poc
+```
+
+Expected output (numbers vary per session):
+
+```json
+{
+    "UserId": "AROA...:your.email@aplazo.mx",
+    "Account": "332730082760",
+    "Arn": "arn:aws:sts::332730082760:assumed-role/AWSReservedSSO_Hackathon2026_<hash>/your.email@aplazo.mx"
+}
+```
+
+If the `Account` field is `332730082760` you're good — proceed to `./infra/scripts/deploy-direct.sh`.
+
+#### Session lifetime
+
+SSO sessions expire after a few hours. When you see this:
+
+```
+The SSO session associated with this profile has expired or is otherwise invalid.
+```
+
+Just re-run:
+
+```bash
+aws sso login --profile hackathon-poc
+```
+
+#### For main-account access (later, when you tackle Task A)
+
+The cross-account provisioner role in main account `159200192518` needs to be created from a profile that has IAM write rights in that account. Two existing Aplazo SSO profiles likely qualify:
+
+```
+aplazo-apz           → account 159200192518 (main)
+aplazo-apz-sandbox   → account 754396578028 (Pulumi snx)
+```
+
+Both use `sso_start_url = https://aplazo.awsapps.com/start` (different from the hackathon-poc URL above — Aplazo has its own SSO portal). If you don't see those profiles in `~/.aws/config`, ask DevOps which one has IAM write in main, then `aws sso login --profile <name>` and run the staging-reader-role script from there.
 
 ---
 
