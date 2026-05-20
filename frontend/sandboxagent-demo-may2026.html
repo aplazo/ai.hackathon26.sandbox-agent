@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SandboxAgent — On-Demand Merchant Sandbox Configurator</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   :root {
     --bg: #0b0d12;
@@ -138,16 +139,73 @@
   .saved-item small { color: var(--text-dim); }
   details summary { cursor: pointer; color: var(--text-dim); font-size: 12px; padding: 4px 0; }
   details[open] summary { color: var(--text); }
+
+  /* Login gate */
+  .login-gate {
+    max-width: 460px; margin: 80px auto 0; text-align: center;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 40px 32px 32px; box-shadow: var(--shadow);
+  }
+  .login-gate .brand {
+    font-size: 12px; color: var(--text-dim); letter-spacing: 2px;
+    text-transform: lowercase; margin-bottom: 6px;
+  }
+  .login-gate h1 { margin: 0 0 14px; font-size: 28px; letter-spacing: -0.5px; font-weight: 700; }
+  .login-gate p { color: var(--text-dim); margin: 0 0 26px; font-size: 14px; line-height: 1.5; }
+  .login-gate .gsi-wrap { display: flex; justify-content: center; margin-top: 12px; }
+  .login-gate .footer {
+    margin-top: 36px; padding-top: 22px; border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--text-dim); line-height: 1.55;
+  }
+  .login-gate .footer a { color: var(--text-dim); }
+  .login-error {
+    margin-top: 16px; padding: 10px 14px; border-radius: 8px;
+    border: 1px solid rgba(255,90,120,0.4); background: rgba(255,90,120,0.08);
+    color: var(--err); font-size: 13px; display: none;
+  }
+
+  /* User chip in header */
+  .user-chip {
+    display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 999px;
+    font-size: 12px; color: var(--text-dim);
+  }
+  .user-chip img { width: 22px; height: 22px; border-radius: 50%; }
+  .user-chip button {
+    background: transparent; border: none; color: var(--text-dim);
+    cursor: pointer; padding: 0 0 0 4px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+  .user-chip button:hover { color: var(--err); }
 </style>
 </head>
 <body>
-<div class="wrap">
+
+<!-- Login gate (visible until @aplazo.mx sign-in succeeds) -->
+<div id="loginGate" class="login-gate">
+  <div class="brand">aplazo</div>
+  <h1>SandboxAgent</h1>
+  <p>Inicia sesión con tu cuenta de Google corporativa para acceder al panel.</p>
+  <div class="gsi-wrap">
+    <div id="g_id_signin"></div>
+  </div>
+  <div id="loginError" class="login-error"></div>
+  <div class="footer">
+    Debes servir esta página por HTTPS (o localhost) y crear un Client ID OAuth en Google Cloud Console con este origen autorizado.
+  </div>
+</div>
+
+<!-- App (hidden until login succeeds) -->
+<div id="appRoot" class="wrap" style="display: none;">
   <header>
     <div>
       <h1>SandboxAgent <span class="badge">v1.6</span></h1>
       <div class="tagline">On-demand isolated merchant sandboxes · APLAZO Hackathon 2026</div>
     </div>
-    <div class="tagline">Region: us-east-1 · Model: claude-sonnet-4-20250514</div>
+    <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 8px;">
+      <div id="userChip" class="user-chip"></div>
+      <div class="tagline">Region: us-east-1 · Model: claude-sonnet-4-20250514</div>
+    </div>
   </header>
 
   <div class="grid">
@@ -163,19 +221,7 @@
         <select id="integrationType">
           <option value="">— Select integration type —</option>
           <option value="API">API</option>
-          <option value="SHOPI">SHOPI</option>
-          <option value="POSUI">POSUI (creates branch)</option>
-          <option value="WOO">WOO</option>
-          <option value="MGT">MGT</option>
-          <option value="WALMART">WALMART</option>
-          <option value="VIRTUAL_CARD">VIRTUAL_CARD</option>
-          <option value="VTEX">VTEX</option>
-          <option value="BILLS">BILLS</option>
-          <option value="CASH_LOAN">CASH_LOAN</option>
-          <option value="WM_APLAZO">WM_APLAZO</option>
-          <option value="PROSCAI">PROSCAI (creates branch)</option>
-          <option value="SHOPIV2">SHOPIV2</option>
-          <option value="PRESTA">PRESTA</option>
+          <option value="API_OFFLINE">API_OFFLINE (creates branch)</option>
         </select>
 
         <div class="btn-row">
@@ -225,12 +271,110 @@
  * ============================================================ */
 
 const CONFIG = {
-  apiKey:       'YOUR_ANTHROPIC_API_KEY',                              // via 1Password
-  model:        'claude-sonnet-4-20250514',
-  backendUrl:   'https://REPLACE-WITH-API-GW-ID.execute-api.us-east-1.amazonaws.com/sandbox',
-  backendToken: 'YOUR_BACKEND_TOKEN',                                  // via Secrets Manager
-  maxIterations: 12,
+  apiKey:         'YOUR_ANTHROPIC_API_KEY',                              // via 1Password
+  model:          'claude-sonnet-4-20250514',
+  backendUrl:     'https://REPLACE-WITH-API-GW-ID.execute-api.us-east-1.amazonaws.com/sandbox',
+  backendToken:   'YOUR_BACKEND_TOKEN',                                  // via Secrets Manager
+  googleClientId: '627677728138-b4b39v4ie3dn3qa0lm6lg01mtcao7otv.apps.googleusercontent.com',
+  allowedDomain:  'aplazo.mx',
+  maxIterations:  12,
 };
+
+/* ============================================================
+ * Google SSO gate — restricts access to @aplazo.mx accounts
+ * ============================================================ */
+const SESSION_KEY = 'sandboxagent.user';
+
+function decodeJwt(token) {
+  try {
+    const [, payload] = token.split('.');
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+    return JSON.parse(decodeURIComponent(escape(json)));
+  } catch (_) { return null; }
+}
+
+function showLoginError(msg) {
+  const el = document.getElementById('loginError');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function renderUserChip(user) {
+  const chip = document.getElementById('userChip');
+  chip.innerHTML = `
+    ${user.picture ? `<img src="${user.picture}" alt="">` : ''}
+    <span>${user.email}</span>
+    <button id="logoutBtn" title="Sign out">Sign out</button>
+  `;
+  document.getElementById('logoutBtn').addEventListener('click', () => {
+    sessionStorage.removeItem(SESSION_KEY);
+    if (window.google?.accounts?.id) window.google.accounts.id.disableAutoSelect();
+    location.reload();
+  });
+}
+
+function enterApp(user) {
+  sessionStorage.setItem(SESSION_KEY, JSON.stringify(user));
+  document.getElementById('loginGate').style.display = 'none';
+  document.getElementById('appRoot').style.display = 'block';
+  renderUserChip(user);
+}
+
+function handleCredential(response) {
+  const claims = decodeJwt(response.credential);
+  if (!claims) { showLoginError('Could not parse Google identity token.'); return; }
+  if (!claims.email_verified) { showLoginError('Your Google account is not verified.'); return; }
+  if (claims.hd !== CONFIG.allowedDomain) {
+    showLoginError(`Access restricted to @${CONFIG.allowedDomain} accounts. You signed in as ${claims.email || 'unknown'}.`);
+    return;
+  }
+  enterApp({
+    email:   claims.email,
+    name:    claims.name,
+    picture: claims.picture,
+    sub:     claims.sub,
+    iat:     claims.iat,
+    exp:     claims.exp,
+  });
+}
+
+function initLogin() {
+  const cached = sessionStorage.getItem(SESSION_KEY);
+  if (cached) {
+    try {
+      const user = JSON.parse(cached);
+      if (user.exp && user.exp * 1000 > Date.now() + 60_000) {
+        enterApp(user);
+        return;
+      }
+    } catch (_) { /* fall through */ }
+    sessionStorage.removeItem(SESSION_KEY);
+  }
+
+  const waitForGsi = setInterval(() => {
+    if (!window.google?.accounts?.id) return;
+    clearInterval(waitForGsi);
+
+    if (!CONFIG.googleClientId || CONFIG.googleClientId.startsWith('YOUR_')) {
+      showLoginError('CONFIG.googleClientId is not configured. Set it in the HTML and reload.');
+      return;
+    }
+
+    window.google.accounts.id.initialize({
+      client_id: CONFIG.googleClientId,
+      callback: handleCredential,
+      auto_select: false,
+      ux_mode: 'popup',
+      hd: CONFIG.allowedDomain,
+    });
+    window.google.accounts.id.renderButton(
+      document.getElementById('g_id_signin'),
+      { theme: 'filled_blue', size: 'large', shape: 'pill', text: 'signin_with', logo_alignment: 'left' },
+    );
+  }, 60);
+}
+
+document.addEventListener('DOMContentLoaded', initLogin);
 
 const STEPS = [
   { key: 'resolve_snapshot_config', title: 'Resolve snapshot + ECR images', desc: 'Looking up the latest clean staging snapshot and core service images.' },
@@ -265,14 +409,14 @@ const TOOLS = [
   },
   {
     name: 'create_merchant',
-    description: 'Create a fresh merchant via the existing Aplazo Merchant Creation Lambda (us-west-1). For POSUI / PROSCAI / API_OFFLINE the branch is also created automatically in the same step. Returns merchantId and apiToken which you MUST use in later tools.',
+    description: 'Create a fresh merchant via the existing Aplazo Merchant Creation Lambda (us-west-1). For API_OFFLINE the branch is also created automatically in the same step. Returns merchantId and apiToken which you MUST use in later tools.',
     input_schema: {
       type: 'object',
       required: ['sandbox_id', 'merchant_ref', 'integration_type'],
       properties: {
         sandbox_id:       { type: 'string' },
         merchant_ref:     { type: 'string' },
-        integration_type: { type: 'string', enum: ['API','SHOPI','POSUI','WOO','MGT','WALMART','VIRTUAL_CARD','VTEX','BILLS','CASH_LOAN','WM_APLAZO','PROSCAI','SHOPIV2','PRESTA'] },
+        integration_type: { type: 'string', enum: ['API', 'API_OFFLINE'] },
         customer_fee:     { type: 'number' },
       },
     },
@@ -345,7 +489,7 @@ Your job: provision an isolated staging sandbox for a single merchant by calling
 PROVISIONING SEQUENCE (call these tools in this exact order, ONE at a time):
   1. resolve_snapshot_config  — discover the snapshot + ECR images
   2. restore_rds_snapshot     — restore the snapshot to a new RDS instance
-  3. create_merchant          — create a fresh merchant (and branch if POSUI / PROSCAI / API_OFFLINE)
+  3. create_merchant          — create a fresh merchant (and branch if API_OFFLINE)
   4. deploy_ecs_services      — launch Fargate services pointed at the new DB
   5. configure_merchant       — inject merchant_id + api_token from step 3 into ECS
   6. validate_sandbox         — verify via api.aplazo.net /auth + /loan
@@ -356,7 +500,7 @@ CRITICAL RULES:
 - After create_merchant, ALWAYS use the merchantId and apiToken from its output for configure_merchant, validate_sandbox and save_session — never invent credentials.
 - After deploy_ecs_services, use sandboxBaseUrl as the sandbox_base_url for validate_sandbox.
 - After validate_sandbox, use checkoutUrl as the checkout_url for save_session.
-- For save_session, build a concise human-readable label like "Walmart WALMART — May 20".
+- For save_session, build a concise human-readable label like "walmart_mx API — May 20".
 - If a tool fails, summarize what completed, what failed, and what the user should do next. Do not retry the same tool more than once.
 
 WHEN ALL 7 TOOLS HAVE COMPLETED SUCCESSFULLY: respond with a short final message (1–2 sentences). Do not call any more tools.`;

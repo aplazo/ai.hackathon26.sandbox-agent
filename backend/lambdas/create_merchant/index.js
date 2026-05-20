@@ -21,7 +21,7 @@ exports.handler = async (event) => {
   if (!sandbox_id || !merchant_ref || !integration_type) {
     return error(400, 'invalid_input', 'sandbox_id, merchant_ref and integration_type are required');
   }
-  if (!SUPPORTED_INTEGRATION_TYPES.includes(integration_type) && integration_type !== 'API_OFFLINE') {
+  if (!SUPPORTED_INTEGRATION_TYPES.includes(integration_type)) {
     return error(400, 'invalid_integration_type',
       `integration_type must be one of: ${SUPPORTED_INTEGRATION_TYPES.join(', ')}`);
   }

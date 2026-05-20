@@ -1,11 +1,8 @@
 const { isoNow } = require('./ids');
 
-const BRANCH_REQUIRED = new Set(['POSUI', 'PROSCAI', 'API_OFFLINE']);
+const BRANCH_REQUIRED = new Set(['API_OFFLINE']);
 
-const SUPPORTED_INTEGRATION_TYPES = [
-  'API', 'SHOPI', 'POSUI', 'WOO', 'MGT', 'WALMART', 'VIRTUAL_CARD',
-  'VTEX', 'BILLS', 'CASH_LOAN', 'WM_APLAZO', 'PROSCAI', 'SHOPIV2', 'PRESTA',
-];
+const SUPPORTED_INTEGRATION_TYPES = ['API', 'API_OFFLINE'];
 
 function branchRequired(integrationType) {
   return BRANCH_REQUIRED.has(integrationType);
