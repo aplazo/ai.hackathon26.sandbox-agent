@@ -15,7 +15,7 @@ AI-driven AWS provisioning agent. A merchant types what they need; the agent cal
 | API URL | `https://f0ndmxurpk.execute-api.us-east-1.amazonaws.com/sandbox/sandbox` |
 | Frontend | Published at `https://www.aplazo.ai/engineering/sandboxagent-demo-may2026.html` via Aplazo HTML Publisher |
 | Auth | Google Sign In With Google (`hd=aplazo.mx`) + backend-side `tokeninfo` verification + Bearer token gate |
-| Data plane | Mock for 5 Lambdas (RDS / ECS / etc.); real HTTP for 2 (merchant creation + Online API). See HANDOFF for the path to full-real. |
+| Data plane | **All real.** Each sandbox = Aurora PG 15.15 cluster + ECS Fargate + ALB rule, restored from real staging snapshot `apzdbstg-hackathon-local` |
 
 ## Architecture
 
@@ -27,51 +27,64 @@ Browser (sandboxagent-demo-may2026.html)
   └── 7 tool calls → API Gateway → Lambdas
                         │
                         ▼
-                  POC us-east-1
-                  ├── 8 Lambdas (Node.js 24, arm64)
+                  POC us-east-1 (all in one region — SCP-friendly)
                   ├── HTTP API + 8 routes
+                  ├── 8 Lambdas (Node.js 24, arm64)
                   ├── DynamoDB sandboxagent-sessions (TTL)
                   └── IAM role sandboxagent-lambda-role
                         │
-                        │  (post-hackathon, see HANDOFF.md)
+                        │  per-sandbox provisioning (REAL)
                         ▼
-                  Main us-west-1
-                  ├── Cross-account STS AssumeRole
-                  ├── RDS snapshot restore (per sandbox)
-                  ├── ECS cluster provisioning (per sandbox)
-                  └── Route53 + ALB host-header routing
+                  POC us-east-1 data plane
+                  ├── Aurora PostgreSQL 15.15 cluster (restored from staging snapshot)
+                  ├── Aurora db.t3.medium instance
+                  ├── ECS Fargate service in poc-hackaton-cluster
+                  ├── ALB target group + listener rule in apz-poc-hackaton
+                  └── Mini-app container (sandboxagent/checkout in POC ECR)
+
+      + real cross-account HTTPS (not AWS API):
+        ├── Merchant Creation Lambda in us-west-1 (creates real merchants)
+        └── api.aplazo.net /auth + /loan (creates real loans)
 ```
 
 ## Repo layout
 
 ```
 .
-├── HANDOFF.md ............................. comprehensive handoff doc for the next dev
+├── HANDOFF.md ............................. handoff doc for the next dev
+├── STATUS.md .............................. team-facing project brief
 ├── README.md .............................. this file
 ├── .gitignore
 ├── frontend/
 │   └── sandboxagent-demo-may2026.html ..... single-file UI + ReAct loop
+├── checkout-app/                           per-sandbox container (Node.js 24)
+│   ├── Dockerfile                          arm64 image based on public.ecr.aws/docker/library/node:24-alpine
+│   ├── index.js                            zero-dep HTTP server, renders HTML w/ env-var-injected sandbox info
+│   └── package.json
 ├── backend/
 │   ├── package.json
 │   └── lambdas/
 │       ├── shared/                          auth, response, ids, mock-data, tags, aws (STS helper)
-│       ├── resolve_snapshot_config/         tool 1 — find snapshot + ECR images
-│       ├── restore_rds_snapshot/            tool 2 — copy + restore snapshot
+│       ├── resolve_snapshot_config/         tool 1 — auto-detect Aurora vs RDS snapshot, return ARN
+│       ├── restore_rds_snapshot/            tool 2 — RestoreDBClusterFromSnapshot + CreateDBInstance (Aurora) or RestoreDBInstanceFromDBSnapshot (regular)
 │       ├── create_merchant/                 tool 3 — real call to us-west-1 merchant Lambda
-│       ├── deploy_ecs_services/             tool 4 — provision ECS (mock)
-│       ├── configure_merchant/              tool 5 — inject merchant credentials
+│       ├── deploy_ecs_services/             tool 4 — real Fargate service + ALB target group + listener rule
+│       ├── configure_merchant/              tool 5 — polls ECS, generates syntheticUserId
 │       ├── validate_sandbox/                tool 6 — real /auth + /loan against api.aplazo.net
-│       ├── save_session/                    tool 7 — persist session in DynamoDB
+│       ├── save_session/                    tool 7 — real DynamoDB put
 │       └── fetch_config/                    auth-gated runtime config endpoint
 └── infra/
     ├── template.yaml ...................... SAM template (kept for reference, NOT used — SCP blocks S3)
     ├── samconfig.toml.example
+    ├── data-plane-config.env                ARNs for the shared data plane (VPC, subnets, SGs, ALB, ECR, snapshot)
     ├── policies/
     │   ├── lambda-trust-policy.json
-    │   └── lambda-execution-policy.json
+    │   └── lambda-execution-policy.json    perms for RDS Aurora + ECS + ELB + EC2 + DynamoDB + STS + KMS
     ├── scripts/
-    │   ├── create-staging-reader-role.sh    one-time cross-account setup (run from main account)
-    │   └── deploy-direct.sh                 THE deploy script
+    │   ├── create-staging-reader-role.sh    legacy cross-account role script (not needed anymore — see HANDOFF §0.1)
+    │   └── deploy-direct.sh                 THE deploy script (idempotent, sources data-plane-config.env)
+    ├── sql/
+    │   └── sandbox-seed.sql                 reference schema for legacy golden snapshot (not loaded now)
     └── README.md
 ```
 
@@ -255,20 +268,46 @@ const CONFIG = {
 
 `apiKey` and `backendToken` are **deliberately absent** — they are fetched from `/sandbox/config` after Google login and held in a closure variable, never written to `window` or `CONFIG`.
 
-## The 8 tools (current behavior)
+## The 8 tools (current behavior — all real)
 
-| # | Tool | Mock? | What it does |
+| # | Tool | Mode | What it does |
 | :-: | :-- | :-: | :-- |
-| 1 | `resolve_snapshot_config` | ✅ mock | Returns a fake snapshot ARN + 3 core ECR image URIs |
-| 2 | `restore_rds_snapshot` | ✅ mock | Pretends to restore an RDS instance |
-| 3 | `create_merchant` | ❌ **real** | Calls real us-west-1 merchant creation Lambda, returns real `merchantId` + `apiToken`; for `API_OFFLINE` also creates a branch |
-| 4 | `deploy_ecs_services` | ✅ mock | Returns fake ECS cluster + service URLs |
-| 5 | `configure_merchant` | ✅ mock | Returns fake synthetic user info |
-| 6 | `validate_sandbox` | ❌ **real** | Authenticates with the merchant on `api.aplazo.net`, creates a real loan, returns real `checkout.aplazo.net/main/<uuid>` URL |
-| 7 | `save_session` | ✅ mock | Returns fake session id (DynamoDB write skipped) |
-| — | `fetch_config` | — | Auth-gated config endpoint (not part of the agent loop, called by frontend at login) |
+| 1 | `resolve_snapshot_config` | ✅ real | Describes Aurora cluster snapshot `apzdbstg-hackathon-local` (auto-detects Aurora vs regular RDS from the ARN) |
+| 2 | `restore_rds_snapshot` | ✅ real | `RestoreDBClusterFromSnapshot` + `CreateDBInstance` (Aurora path) or `RestoreDBInstanceFromDBSnapshot` (regular path). Fire-and-poll-short pattern, returns within 25s |
+| 3 | `create_merchant` | ✅ real | Calls us-west-1 Merchant Creation Lambda → real `merchantId` + `apiToken`; creates branch for `API_OFFLINE` |
+| 4 | `deploy_ecs_services` | ✅ real | Registers task def + creates Fargate service on `poc-hackaton-cluster` + ALB target group + listener rule with path-pattern `/sandbox-{id}/*` |
+| 5 | `configure_merchant` | ✅ real | Polls ECS for `runningCount >= 1`, generates `syntheticUserId` |
+| 6 | `validate_sandbox` | ✅ real | `/auth` + `/loan` against `api.aplazo.net`, returns real `checkout.aplazo.net/main/<uuid>` URL |
+| 7 | `save_session` | ✅ real | `PutItem` into DynamoDB `sandboxagent-sessions` with TTL |
+| — | `fetch_config` | — | Auth-gated runtime config endpoint (not in the agent loop; frontend calls it after Google login) |
 
-Flipping the 5 mock Lambdas to real is the central work item in [`HANDOFF.md`](./HANDOFF.md).
+## Data plane infrastructure
+
+The per-sandbox AWS resources, all created at provision-time by the agent and tagged with `sandbox-id=<id>` for the DevOps reaper:
+
+| Resource | Identifier pattern | Lifecycle |
+| :-- | :-- | :-- |
+| Aurora cluster | `sandbox-<id>-cluster` | Restored from `apzdbstg-hackathon-local` (~5 min) |
+| Aurora instance | `sandbox-<id>-i1` (db.t3.medium) | Inside the cluster (~5 min more) |
+| ECS task definition | `sba-<id>-td:1` | New revision per sandbox |
+| ECS Fargate service | `sba-<id>-svc` in `poc-hackaton-cluster` | Runs our `sandboxagent/checkout` container |
+| ALB target group | `sba-<id>-tg` | HTTP 8080 health-check `/health` |
+| ALB listener rule | path-pattern `/sandbox-<id>/*` | Priority 1000-9000 (hash of sandbox_id) |
+| DynamoDB record | `sess_<id>` in `sandboxagent-sessions` | TTL 10 days |
+| Aplazo merchant | numeric ID in dev environment | No auto-cleanup (Aplazo side) |
+| Aplazo loan | UUID in dev environment | No auto-cleanup (Aplazo side) |
+
+The shared data plane infra (created once, used by all sandboxes):
+
+| Resource | Purpose |
+| :-- | :-- |
+| ECR repo `sandboxagent/checkout` | Stores the per-sandbox checkout image |
+| RDS subnet group `sandboxagent-subnet-group` | Aurora cluster placement (us-east-1a + 1c) |
+| Security group `sandboxagent-rds-sg` | Postgres 5432 from VPC CIDR |
+| Security group `sandboxagent-ecs-sg` | TCP 8080 from ALB SG |
+| ECS task execution role `sandboxagent-ecs-task-execution-role` | Pull ECR image + push logs |
+| Log group `/ecs/sandboxagent` | All Fargate task logs (pre-created — SCP blocks auto-create) |
+| Aurora cluster snapshot `apzdbstg-hackathon-local` | Real staging data, shared by DevOps to POC, re-encrypted with `aws/rds` |
 
 ## Mandatory AWS tags
 
@@ -299,14 +338,14 @@ The hackathon SCP enforces these at IAM creation time. The DevOps reaper deletes
 
 ## Roadmap (post-hackathon)
 
-- Cross-account provisioner role + real per-sandbox infrastructure (the main piece of `HANDOFF.md`)
-- DNS wildcard `*.checkout.aplazo.net` → ALB host-header routing → per-sandbox ECS
-- Backend proxy for Anthropic API (key never reaches client)
-- Cognito + Google Workspace SSO for the HTML itself (replaces current GIS-only gate)
+- Per-sandbox checkout subdomain `sandbox-<id>.checkout.aplazo.net` instead of the shared `checkout.aplazo.net` (requires wildcard DNS + ACM cert + the real Aplazo `checkout-engine` running in our Fargate, which currently lives in us-west-1 ECR)
+- Backend proxy for Anthropic API (so the key never reaches the client)
+- Cognito + Google Workspace SSO for the HTML (the current GIS gate is client-side only — secrets are still gated server-side)
 - Angular 20 SPA frontend (replaces single-file HTML)
-- Snapshot pre-warming pool to skip the 5-15 min restore wait
+- Snapshot pre-warming pool to skip the 5-7 min Aurora restore
 - "Destroy sandbox" button + Step Functions for the long-running flow
 - CI/CD pipeline (GitHub Actions → `deploy-direct.sh`)
+- Switch `restore_rds_snapshot` to assume a cross-region role so we can read snapshots directly from main us-west-1 (currently DevOps re-encrypts and shares manually)
 
 ## References
 
