@@ -108,7 +108,7 @@ Servida por un container Node.js corriendo en Fargate del merchant. Muestra:
 | Loan en Aplazo dev | ✅ real | Real loan via `api.aplazo.net` |
 | Tags AWS obligatorios (6 + sandbox-id) | ✅ real | Para el DevOps reaper |
 | Container scanning ECR | ✅ real | scanOnPush=true |
-| Sandbox URL = `sandbox-{id}.checkout.aplazo.net` | ❌ | Requiere DNS + cert + cambio en Aplazo backend |
+| Sandbox URL = `sandbox-{id}.checkout.aplazo.net` | ❌ hackathon blocker | Cross-site/DNS no permitido en hackathon scope — ver [`URL-STRATEGY.md`](./URL-STRATEGY.md) para el detalle + plan post-win (6 pasos, ~2 días de trabajo con coordinación DevOps) |
 
 ---
 
@@ -162,7 +162,7 @@ El HTML publicado solo tiene `backendUrl`, `googleClientId`, `allowedDomain` (p�
 ## Roadmap post-hackathon
 
 ### Short-term (semanas)
-- **Real per-sandbox checkout URL** (`sandbox-{id}.checkout.aplazo.net`) — requiere wildcard DNS + cert + el `checkout-engine` real corriendo en Fargate (no nuestro mock)
+- **Real per-sandbox checkout URL** (`sandbox-{id}.checkout.aplazo.net`) — requiere wildcard DNS + cert + el `checkout-engine` real corriendo en Fargate (no nuestro mock). **Documentado como hackathon blocker en [`URL-STRATEGY.md`](./URL-STRATEGY.md)**, plan post-win en 3 fases (~3-4 semanas para llegar a la visión completa del PRD).
 - **Backend proxy para Anthropic** — quitar la API key del browser, proxearlo via Lambda
 - **Cleanup Lambda** — destroy sandbox bajo demanda (botón en UI), no esperar al reaper
 - **Pool de snapshots pre-restored** — bajar el tiempo de provisioning de 7 min a <30s

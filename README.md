@@ -338,7 +338,7 @@ The hackathon SCP enforces these at IAM creation time. The DevOps reaper deletes
 
 ## Roadmap (post-hackathon)
 
-- Per-sandbox checkout subdomain `sandbox-<id>.checkout.aplazo.net` instead of the shared `checkout.aplazo.net` (requires wildcard DNS + ACM cert + the real Aplazo `checkout-engine` running in our Fargate, which currently lives in us-west-1 ECR)
+- Per-sandbox checkout subdomain `sandbox-<id>.checkout.aplazo.net` instead of the shared `checkout.aplazo.net` — **documented as hackathon blocker** in [`URL-STRATEGY.md`](./URL-STRATEGY.md), with 3-phase post-win plan (DNS + cert + real checkout-engine mirror)
 - Backend proxy for Anthropic API (so the key never reaches the client)
 - Cognito + Google Workspace SSO for the HTML (the current GIS gate is client-side only — secrets are still gated server-side)
 - Angular 20 SPA frontend (replaces single-file HTML)
@@ -350,6 +350,8 @@ The hackathon SCP enforces these at IAM creation time. The DevOps reaper deletes
 ## References
 
 - **HANDOFF.md** — the canonical doc for what's pending and the architectural decisions
+- **URL-STRATEGY.md** — the URL gap (sandbox URL aesthetic / cross-site setup) documented as hackathon blocker, with post-win plan
+- **STATUS.md** — team-facing brief of the current state
 - **PRD v1.6** — https://docs.google.com/document/d/1ik5-MMWy6xAygyAH-GNyckvfk9qgYVLSSmKjYIiiSts/
 - **Pulumi infra repo** — https://github.com/aplazo/node.pulumi-infrastructure
 - **Aplazo Online API docs** — https://aplazo.gitbook.io/aplazo-integrations/online-api/

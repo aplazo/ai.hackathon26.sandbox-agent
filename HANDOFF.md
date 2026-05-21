@@ -123,18 +123,26 @@ Tags applied: 6 mandatory + `sandbox-id=<id>` + `merchant=<merchant_ref>` + `int
 
 The hackathon demo is feature-complete (real per-sandbox AWS isolation + real Aplazo merchant + real Aplazo loan). What's left is mostly polish for productionization.
 
-### 3.1 The remaining narrative gap: shared checkout URL
+### 3.1 The remaining narrative gap: sandbox URL + checkout URL
 
-When the user clicks "Open checkout", the URL still points to **shared** `checkout.aplazo.net/main/<uuid>` (because that's what `api.aplazo.net/loan` returns). The "isolation" we provide is AWS-side (RDS / ECS / ALB rule per sandbox), but the actual payment flow goes through Aplazo's shared checkout-engine.
+**Two related issues, both blocked by cross-site / cross-team permissions** — documented in detail in [`URL-STRATEGY.md`](./URL-STRATEGY.md).
 
-To make the checkout URL ALSO per-sandbox (`sandbox-<id>.checkout.aplazo.net`), you need:
+**Current state:**
+- Sandbox URL: `http://apz-poc-hackaton-...elb.amazonaws.com/sandbox-<id>/` (functional, served by per-sandbox Fargate, but HTTP + AWS-looking)
+- Checkout URL: `https://checkout.aplazo.net/main/<uuid>` (real, shared by all sandboxes — Aplazo's checkout-engine)
 
-1. **DNS** — DevOps creates wildcard `*.sandbox.checkout.aplazo.net` → POC ALB (or subdomain delegation to a Route53 zone we control in POC).
-2. **ACM cert** — wildcard `*.sandbox.checkout.aplazo.net`, DNS-validated, attached to the ALB HTTPS listener.
-3. **A real checkout app in our Fargate task** — currently we run a tiny "welcome page" Node app. The real Aplazo `checkout-engine` lives in us-west-1 ECR and can't be pulled directly. Two paths:
-   - Get DevOps to mirror `aplazo/stg-checkout-engine` to POC ECR.
-   - Or build a minimal sandbox-checkout app ourselves that talks to `api.aplazo.net` for the loan flow.
-4. **Per-sandbox HTTPS listener rule** — host-header routing instead of path-pattern, since each sandbox now has its own subdomain.
+**Target:**
+- Both URLs unified at `https://sandbox-<id>.checkout.aplazo.net/...` — branded HTTPS subdomain, isolated per-sandbox Fargate running the real checkout-engine.
+
+**Three blockers** (all post-hackathon by design):
+
+1. **DNS** — `aplazo.net` Route53 zone is in main account behind SCP `p-5zv6maiv`. DevOps needs to either (a) delegate `sandbox.checkout.aplazo.net` to a Route53 zone we own in POC, or (b) add the wildcard records directly.
+2. **ACM cert** — wildcard `*.sandbox.checkout.aplazo.net` needs DNS validation, which depends on #1.
+3. **Checkout-engine app** — image `aplazo/stg-checkout-engine` lives in us-west-1 ECR, also blocked by `p-5zv6maiv`. DevOps needs to mirror it to POC ECR, OR we reimplement a minimal sandbox-checkout app.
+
+**Effort post-win:** ~2 days for DNS + cert + HTTPS listener (phase 1), ~1 week to swap in the real checkout-engine (phase 2). See [`URL-STRATEGY.md`](./URL-STRATEGY.md) §6 for the full 6-step rollout.
+
+**Demo positioning:** "AWS isolation is real and demonstrable; the URL aesthetic gap is a known cross-site permission issue — if we win, this is the first piece of post-win work."
 
 ### 3.2 Other polish items (smaller)
 
@@ -473,7 +481,7 @@ A merchant can press "Generate sandbox" and within ~80 seconds:
 ### Stretch (post-hackathon)
 
 - **Sub-20-min provisioning** (currently ~80s visible + ~7 min Aurora restore in background)
-- **Per-sandbox checkout URL** (`sandbox-<id>.checkout.aplazo.net`) instead of the shared one
+- **Per-sandbox checkout URL** (`sandbox-<id>.checkout.aplazo.net`) instead of the shared one — see [`URL-STRATEGY.md`](./URL-STRATEGY.md) for the full 6-step plan
 - **Destroy sandbox button** for manual cleanup before the reaper
 - **Pre-warmed snapshot pool**
 
