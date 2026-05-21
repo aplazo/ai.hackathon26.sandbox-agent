@@ -350,6 +350,7 @@ The hackathon SCP enforces these at IAM creation time. The DevOps reaper deletes
 ## References
 
 - **HANDOFF.md** — the canonical doc for what's pending and the architectural decisions
+- **ROADMAP.md** — 6-phase post-hackathon plan (Phase 0 cleanup → Phase 5 multi-tenant) with effort, dependencies, budget, ROI
 - **URL-STRATEGY.md** — the URL gap (sandbox URL aesthetic / cross-site setup) documented as hackathon blocker, with post-win plan
 - **STATUS.md** — team-facing brief of the current state
 - **PRD v1.6** — https://docs.google.com/document/d/1ik5-MMWy6xAygyAH-GNyckvfk9qgYVLSSmKjYIiiSts/
