@@ -8,13 +8,17 @@ const ACCOUNT_ID = process.env.POC_ACCOUNT_ID || '332730082760';
 const GOLDEN_SNAPSHOT = process.env.RDS_GOLDEN_SNAPSHOT || 'sandboxagent-golden-v1';
 const ECR_IMAGE_URI = process.env.ECR_IMAGE_URI || `${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/sandboxagent/checkout:latest`;
 
+function isAuroraClusterSnapshot(id) { return /cluster-snapshot/.test(String(id || '')); }
+
 /**
  * Tool 1 — resolve_snapshot_config
  *
- * Real-mode (POC us-east-1 hackathon variant): we use the SandboxAgent golden
- * snapshot (our own seed) since us-west-1 access to staging is denied by SCP.
- * Returns the snapshot ARN + the single mini-app image we use across all
- * sandboxes. Output shape preserved so the agent prompt doesn't change.
+ * Auto-detects whether RDS_GOLDEN_SNAPSHOT points at:
+ *   - a regular RDS DB snapshot (our default sandboxagent-golden-v1)
+ *   - an Aurora cluster snapshot (e.g. apzdbstg-hackathon-east1 once shared)
+ *
+ * In both cases returns the ARN + the single mini-app image. The downstream
+ * Lambda restore_rds_snapshot reads the ARN format and dispatches accordingly.
  */
 exports.handler = async (event) => {
   const auth = checkBearer(event);
@@ -26,21 +30,47 @@ exports.handler = async (event) => {
   if (MOCK_MODE) return ok(mockSnapshotConfig());
 
   try {
-    const { RDSClient, DescribeDBSnapshotsCommand } = require('@aws-sdk/client-rds');
+    const { RDSClient, DescribeDBSnapshotsCommand, DescribeDBClusterSnapshotsCommand } = require('@aws-sdk/client-rds');
     const rds = new RDSClient({ region: REGION });
-    const out = await rds.send(new DescribeDBSnapshotsCommand({ DBSnapshotIdentifier: GOLDEN_SNAPSHOT }));
-    const snap = out.DBSnapshots?.[0];
-    if (!snap) return error(404, 'snapshot_missing', `Golden snapshot ${GOLDEN_SNAPSHOT} not found`);
+    const isAurora = isAuroraClusterSnapshot(GOLDEN_SNAPSHOT);
+
+    let snapshotArn = null;
+    let snapshotId  = null;
+    let sourceDb    = null;
+    let engine      = null;
+    let estimatedRestoreMinutes = 5;
+
+    if (isAurora) {
+      const out = await rds.send(new DescribeDBClusterSnapshotsCommand({
+        DBClusterSnapshotIdentifier: GOLDEN_SNAPSHOT,
+        IncludeShared: true,
+      }));
+      const snap = out.DBClusterSnapshots?.[0];
+      if (!snap) return error(404, 'snapshot_missing', `Aurora cluster snapshot ${GOLDEN_SNAPSHOT} not found / not shared`);
+      snapshotArn = snap.DBClusterSnapshotArn;
+      snapshotId  = snap.DBClusterSnapshotIdentifier;
+      sourceDb    = snap.DBClusterIdentifier;
+      engine      = snap.Engine;
+      estimatedRestoreMinutes = 7; // cluster + instance
+    } else {
+      const out = await rds.send(new DescribeDBSnapshotsCommand({ DBSnapshotIdentifier: GOLDEN_SNAPSHOT }));
+      const snap = out.DBSnapshots?.[0];
+      if (!snap) return error(404, 'snapshot_missing', `Golden snapshot ${GOLDEN_SNAPSHOT} not found`);
+      snapshotArn = snap.DBSnapshotArn;
+      snapshotId  = snap.DBSnapshotIdentifier;
+      sourceDb    = snap.DBInstanceIdentifier;
+      engine      = snap.Engine;
+    }
 
     return ok({
-      snapshotArn: snap.DBSnapshotArn,
-      snapshotId: snap.DBSnapshotIdentifier,
+      snapshotArn,
+      snapshotId,
+      isAuroraCluster: isAurora,
       sourceRegion: REGION,
-      sourceDbInstance: snap.DBInstanceIdentifier,
-      coreImages: [
-        { service: 'checkout', imageUri: ECR_IMAGE_URI },
-      ],
-      estimatedRestoreMinutes: 5,
+      sourceDbInstance: sourceDb,
+      engine,
+      coreImages: [{ service: 'checkout', imageUri: ECR_IMAGE_URI }],
+      estimatedRestoreMinutes,
     });
   } catch (e) {
     console.error('resolve_snapshot_config failed', e);

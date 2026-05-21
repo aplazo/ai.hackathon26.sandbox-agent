@@ -17,13 +17,20 @@
       "Effect": "Allow",
       "Action": [
         "rds:DescribeDBSnapshots",
+        "rds:DescribeDBClusterSnapshots",
         "rds:DescribeDBInstances",
+        "rds:DescribeDBClusters",
         "rds:DescribeDBSubnetGroups",
         "rds:CopyDBSnapshot",
+        "rds:CopyDBClusterSnapshot",
         "rds:RestoreDBInstanceFromDBSnapshot",
+        "rds:RestoreDBClusterFromSnapshot",
+        "rds:CreateDBInstance",
         "rds:CreateDBSnapshot",
         "rds:DeleteDBInstance",
+        "rds:DeleteDBCluster",
         "rds:ModifyDBInstance",
+        "rds:ModifyDBCluster",
         "rds:AddTagsToResource"
       ],
       "Resource": "*"
