@@ -758,11 +758,20 @@ function renderSummary(collected) {
     ? `<a href="${checkoutUrl}" target="_blank" rel="noopener" style="color: var(--accent); text-decoration: underline; word-break: break-all;">${checkoutUrl}</a>`
     : '<span style="color: var(--text-dim);">—</span>';
 
+  const ecsServiceName = d.services?.[0]?.name;
+  const ecsConsoleUrl = ecsServiceName && d.clusterId
+    ? `https://us-east-1.console.aws.amazon.com/ecs/v2/clusters/${d.clusterId}/services/${ecsServiceName}/health?region=us-east-1`
+    : null;
+  const ecsLink = ecsConsoleUrl
+    ? `<a href="${ecsConsoleUrl}" target="_blank" rel="noopener" style="color: var(--accent); text-decoration: underline; word-break: break-all;">${ecsServiceName}</a>`
+    : '<span style="color: var(--text-dim);">—</span>';
+
   body.innerHTML = `
     <div class="summary-row"><div class="k">Merchant</div><div class="v">${m.commerceName || m.merchantId} <span class="pill">${m.integrationType}</span>${m.branchCreated ? '<span class="pill ok">branch ✓</span>' : ''}</div></div>
     <div class="summary-row"><div class="k">Sandbox details:</div><div class="v">${sandboxLink}</div></div>
     <div class="summary-row"><div class="k">Checkout URL</div><div class="v">${checkoutLink}</div></div>
     <div class="summary-row"><div class="k">DB instance</div><div class="v">${r.dbInstanceId || '—'}</div></div>
+    <div class="summary-row"><div class="k">ECS service</div><div class="v">${ecsLink}</div></div>
     <div class="summary-row"><div class="k">Synthetic user</div><div class="v">${c.syntheticUserId || '—'} · ${c.creditUsed ?? 0}/${c.creditLimit ?? 0} MXN</div></div>
     <div class="summary-row"><div class="k">Validation</div><div class="v ${v.allChecksPass ? 'ok' : 'err'}">${checks || '—'}</div></div>
   `;
