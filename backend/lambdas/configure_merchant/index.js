@@ -4,75 +4,67 @@ const { mockConfigureMerchant } = require('../shared/mock-data');
 const { syntheticUserId, isoNow } = require('../shared/ids');
 
 const MOCK_MODE = process.env.MOCK_MODE === 'true';
-const DEFAULT_CREDIT = { limit: 10000, used: 0 };
+const REGION = process.env.AWS_REGION || 'us-east-1';
+const CLUSTER = process.env.ECS_CLUSTER || 'poc-hackaton-cluster';
+const POLL_BUDGET_MS = 15_000;
+const POLL_INTERVAL_MS = 3_000;
 
+async function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+/**
+ * Tool 5 — configure_merchant
+ *
+ * In the real-provisioning path, ECS task definitions already include all the
+ * merchant-specific env vars (set in deploy_ecs_services). This Lambda's job
+ * is now lighter: confirm the ECS service is healthy, generate a synthetic
+ * user_id for the validation step, and return.
+ *
+ * Returns shape unchanged so the agent prompt doesn't have to change.
+ */
 exports.handler = async (event) => {
   const auth = checkBearer(event);
   if (!auth.ok) return error(401, 'unauthorized', auth.reason);
 
-  const { sandbox_id, merchant_id, api_token, integration_type } = parseBody(event);
-  if (!sandbox_id || !merchant_id) {
-    return error(400, 'invalid_input', 'sandbox_id and merchant_id are required');
-  }
+  const { sandbox_id, merchant_id } = parseBody(event);
+  if (!sandbox_id || !merchant_id) return error(400, 'invalid_input', 'sandbox_id and merchant_id are required');
 
-  if (MOCK_MODE) {
-    return ok(mockConfigureMerchant({ merchantId: merchant_id }));
-  }
+  if (MOCK_MODE) return ok(mockConfigureMerchant({ merchantId: merchant_id }));
+
+  const shortId = String(sandbox_id).replace(/^sb_?/, '').slice(0, 12);
+  const serviceName = `sba-${shortId}-svc`;
+  let serviceStatus = 'UNKNOWN';
+  let runningCount = 0;
 
   try {
-    const {
-      ECSClient, DescribeServicesCommand, DescribeTaskDefinitionCommand,
-      RegisterTaskDefinitionCommand, UpdateServiceCommand,
-    } = require('@aws-sdk/client-ecs');
-    const ecs = new ECSClient({});
-    const clusterName = `sandbox-${sandbox_id}`;
+    const { ECSClient, DescribeServicesCommand } = require('@aws-sdk/client-ecs');
+    const ecs = new ECSClient({ region: REGION });
 
-    const services = await ecs.send(new DescribeServicesCommand({
-      cluster: clusterName,
-      services: ['checkout-api', 'merchant-api', 'payment-engine'],
-    }));
-
-    const envVars = [
-      { name: 'MERCHANT_ID',      value: String(merchant_id) },
-      { name: 'API_TOKEN',        value: String(api_token || '') },
-      { name: 'INTEGRATION_TYPE', value: String(integration_type || '') },
-    ];
-
-    for (const svc of services.services || []) {
-      const taskDefArn = svc.taskDefinition;
-      const td = await ecs.send(new DescribeTaskDefinitionCommand({ taskDefinition: taskDefArn }));
-      const container = { ...td.taskDefinition.containerDefinitions[0] };
-      const existing = new Map((container.environment || []).map((e) => [e.name, e.value]));
-      for (const e of envVars) existing.set(e.name, e.value);
-      container.environment = Array.from(existing, ([name, value]) => ({ name, value }));
-
-      const newTd = await ecs.send(new RegisterTaskDefinitionCommand({
-        family: td.taskDefinition.family,
-        networkMode: td.taskDefinition.networkMode,
-        requiresCompatibilities: td.taskDefinition.requiresCompatibilities,
-        cpu: td.taskDefinition.cpu,
-        memory: td.taskDefinition.memory,
-        executionRoleArn: td.taskDefinition.executionRoleArn,
-        taskRoleArn: td.taskDefinition.taskRoleArn,
-        containerDefinitions: [container],
-      }));
-
-      await ecs.send(new UpdateServiceCommand({
-        cluster: clusterName,
-        service: svc.serviceName,
-        taskDefinition: newTd.taskDefinition.taskDefinitionArn,
-      }));
+    const start = Date.now();
+    while (Date.now() - start < POLL_BUDGET_MS) {
+      await sleep(POLL_INTERVAL_MS);
+      try {
+        const desc = await ecs.send(new DescribeServicesCommand({ cluster: CLUSTER, services: [serviceName] }));
+        const svc = desc.services?.[0];
+        if (svc) {
+          serviceStatus = svc.status;
+          runningCount = svc.runningCount || 0;
+          if (runningCount >= 1) break;
+        }
+      } catch (_) { /* transient */ }
     }
-
-    return ok({
-      merchantId: merchant_id,
-      displayName: typeof merchant_id === 'string' ? merchant_id : `merchant_${merchant_id}`,
-      syntheticUserId: syntheticUserId(),
-      creditLimit: DEFAULT_CREDIT.limit,
-      creditUsed: DEFAULT_CREDIT.used,
-      configuredAt: isoNow(),
-    });
   } catch (e) {
-    return error(500, 'ecs_configure_failed', e.message);
+    console.error('configure_merchant probe failed', e);
   }
+
+  return ok({
+    merchantId: merchant_id,
+    displayName: typeof merchant_id === 'string' ? merchant_id : `merchant_${merchant_id}`,
+    syntheticUserId: syntheticUserId(),
+    creditLimit: 10000,
+    creditUsed: 0,
+    ecsService: serviceName,
+    ecsStatus: serviceStatus,
+    ecsRunningCount: runningCount,
+    configuredAt: isoNow(),
+  });
 };

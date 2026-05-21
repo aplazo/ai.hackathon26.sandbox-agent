@@ -1,0 +1,13 @@
+{
+  "name": "sandboxagent-checkout",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Per-sandbox HTML view served from ECS Fargate. Zero external dependencies.",
+  "main": "index.js",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node index.js"
+  }
+}

@@ -37,12 +37,21 @@ if [[ -z "$BACKEND_TOKEN" ]]; then
   exit 1
 fi
 
-MOCK_MODE="${MOCK_MODE:-true}"
+MOCK_MODE="${MOCK_MODE:-false}"
 MERCHANT_CREATION_URL="https://jwaakdci64.execute-api.us-west-1.amazonaws.com/merchant_creation"
 BRANCH_URL="https://merchant.aplazo.net/merchant/create-branch"
 APLAZO_API_BASE="https://api.aplazo.net"
 STAGING_REGION="us-west-1"
 SANDBOX_DOMAIN="aplazo.ai"
+
+# Data plane config (sourced from infra/data-plane-config.env)
+DATA_PLANE_CONFIG="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/data-plane-config.env"
+if [[ -f "$DATA_PLANE_CONFIG" ]]; then
+  # shellcheck disable=SC1090
+  source "$DATA_PLANE_CONFIG"
+else
+  echo "WARN: $DATA_PLANE_CONFIG missing — real-mode Lambdas will have empty data plane refs"
+fi
 
 # Auth-gated config endpoint secrets — only attached to fetch_config Lambda
 ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-$(cat /tmp/sandboxagent-anthropic-key.txt 2>/dev/null || true)}"
@@ -153,11 +162,10 @@ LAMBDAS=(
   "fetch_config:config:15"
 )
 
-# Common env vars (5 AWS-heavy Lambdas — stay in mock until cross-account access is ready)
-ENV_JSON_COMMON='{"Variables":{"MOCK_MODE":"'"$MOCK_MODE"'","BACKEND_TOKEN":"'"$BACKEND_TOKEN"'","DEFAULT_OWNER":"'"$OWNER"'","RESOURCE_EXPIRES":"'"$EXPIRES"'","SQUAD":"'"$SQUAD"'","SESSIONS_TABLE":"'"$TABLE_NAME"'","STAGING_REGION":"'"$STAGING_REGION"'","STAGING_DB_NAME_PATTERNS":"aplazo-staging-clean","ECR_REPO_PREFIX":"aplazo/stg-","STAGING_CLUSTER":"aplazo-stg-cluster","CORE_SERVICES":"checkout-api,merchant-api,payment-engine","POC_ACCOUNT_ID":"'"$ACCOUNT_ID"'","MERCHANT_CREATION_URL":"'"$MERCHANT_CREATION_URL"'","BRANCH_URL":"'"$BRANCH_URL"'","APLAZO_API_BASE":"'"$APLAZO_API_BASE"'","SANDBOX_DOMAIN":"'"$SANDBOX_DOMAIN"'"}}'
+# Real-AWS env vars (5 Lambdas que tocan recursos AWS reales en POC us-east-1)
+ENV_JSON_REAL_AWS='{"Variables":{"MOCK_MODE":"false","BACKEND_TOKEN":"'"$BACKEND_TOKEN"'","DEFAULT_OWNER":"'"$OWNER"'","RESOURCE_EXPIRES":"'"$EXPIRES"'","SQUAD":"'"$SQUAD"'","SESSIONS_TABLE":"'"$TABLE_NAME"'","POC_ACCOUNT_ID":"'"$ACCOUNT_ID"'","RDS_GOLDEN_SNAPSHOT":"'"${RDS_GOLDEN_SNAPSHOT:-sandboxagent-golden-v1}"'","RDS_SUBNET_GROUP":"'"${RDS_SUBNET_GROUP:-sandboxagent-subnet-group}"'","RDS_SG_ID":"'"${RDS_SG_ID:-}"'","ECS_CLUSTER":"'"${ECS_CLUSTER:-poc-hackaton-cluster}"'","ECS_SG_ID":"'"${ECS_SG_ID:-}"'","SUBNET_IDS":"'"${SUBNET_IDS:-}"'","VPC_ID":"'"${VPC_ID:-}"'","TASK_EXECUTION_ROLE_ARN":"'"${TASK_EXECUTION_ROLE_ARN:-}"'","ECR_IMAGE_URI":"'"${ECR_IMAGE_URI:-}"'","LISTENER_ARN":"'"${LISTENER_ARN:-}"'","SANDBOX_BASE_HOST":"'"${SANDBOX_BASE_HOST:-}"'"}}'
 
-# Real-HTTP env vars (create_merchant + validate_sandbox — call real Aplazo APIs,
-# no cross-account AWS needed, so the Visit Sandbox URL works end-to-end)
+# Real-HTTP env vars (create_merchant + validate_sandbox — call real Aplazo APIs)
 ENV_JSON_REAL_HTTP='{"Variables":{"MOCK_MODE":"false","BACKEND_TOKEN":"'"$BACKEND_TOKEN"'","DEFAULT_OWNER":"'"$OWNER"'","RESOURCE_EXPIRES":"'"$EXPIRES"'","SQUAD":"'"$SQUAD"'","MERCHANT_CREATION_URL":"'"$MERCHANT_CREATION_URL"'","BRANCH_URL":"'"$BRANCH_URL"'","APLAZO_API_BASE":"'"$APLAZO_API_BASE"'"}}'
 
 # Special env vars for fetch_config — secrets returned to authenticated clients
@@ -170,7 +178,7 @@ for entry in "${LAMBDAS[@]}"; do
   case "$lambda" in
     fetch_config)                       env_json="$ENV_JSON_CONFIG" ;;
     create_merchant|validate_sandbox)   env_json="$ENV_JSON_REAL_HTTP" ;;
-    *)                                  env_json="$ENV_JSON_COMMON" ;;
+    *)                                  env_json="$ENV_JSON_REAL_AWS" ;;
   esac
 
   log "Lambda: $fn_name"

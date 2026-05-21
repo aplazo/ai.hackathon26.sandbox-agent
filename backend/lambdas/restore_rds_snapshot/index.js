@@ -4,31 +4,36 @@ const { mockRestoreRds } = require('../shared/mock-data');
 const { mandatoryTags } = require('../shared/tags');
 
 const MOCK_MODE = process.env.MOCK_MODE === 'true';
-const DB_INSTANCE_CLASS = process.env.DB_INSTANCE_CLASS || 'db.t3.medium';
-const TARGET_REGION = process.env.AWS_REGION || 'us-east-1';
-const POLL_INTERVAL_MS = 15_000;
-const MAX_POLL_MS = 14 * 60 * 1000;
+const REGION = process.env.AWS_REGION || 'us-east-1';
+const DB_INSTANCE_CLASS = process.env.DB_INSTANCE_CLASS || 'db.t3.micro';
+const GOLDEN_SNAPSHOT = process.env.RDS_GOLDEN_SNAPSHOT || 'sandboxagent-golden-v1';
+const SUBNET_GROUP = process.env.RDS_SUBNET_GROUP || 'sandboxagent-subnet-group';
+const RDS_SG_ID = process.env.RDS_SG_ID || '';
+const POLL_INTERVAL_MS = 5000;
+const FIRE_AND_POLL_BUDGET_MS = 20_000;
 
 async function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 /**
- * Tool 2 — restore_rds_snapshot.
+ * Tool 2 — restore_rds_snapshot (REAL, hackathon variant)
  *
- * Cross-region copy from main(us-west-1) → POC(us-east-1), then restore in POC.
+ * Restores from the SandboxAgent golden snapshot (our own seed data, since
+ * we don't have us-west-1 access to staging snapshots). When DevOps copies
+ * the real staging snapshot to us-east-1, swap RDS_GOLDEN_SNAPSHOT env var
+ * and the architecture is identical.
  *
- *   1. CopyDBSnapshot (in POC us-east-1) from the shared us-west-1 snapshot
- *   2. Wait for copy to be available
- *   3. RestoreDBInstanceFromDBSnapshot from the local copy
- *   4. Poll until the instance is "available"
+ * Pattern: fire-and-poll-short
+ *   - Issue RestoreDBInstanceFromDBSnapshot (returns immediately)
+ *   - Poll for ~20s for status changes (API GW hard limit is 30s)
+ *   - Return whatever we have — agent proceeds even if status=creating
+ *   - The actual RDS becomes "available" 5-10 min later in the background
  */
 exports.handler = async (event) => {
   const auth = checkBearer(event);
   if (!auth.ok) return error(401, 'unauthorized', auth.reason);
 
-  const { snapshot_arn, sandbox_id, requester, merchant_ref, integration_type, source_region } = parseBody(event);
-  if (!snapshot_arn || !sandbox_id) {
-    return error(400, 'invalid_input', 'snapshot_arn and sandbox_id are required');
-  }
+  const { sandbox_id, requester, merchant_ref, integration_type } = parseBody(event);
+  if (!sandbox_id) return error(400, 'invalid_input', 'sandbox_id is required');
 
   if (MOCK_MODE) {
     await sleep(800);
@@ -37,71 +42,69 @@ exports.handler = async (event) => {
 
   try {
     const {
-      RDSClient, CopyDBSnapshotCommand, DescribeDBSnapshotsCommand,
-      RestoreDBInstanceFromDBSnapshotCommand, DescribeDBInstancesCommand,
+      RDSClient,
+      RestoreDBInstanceFromDBSnapshotCommand,
+      DescribeDBInstancesCommand,
     } = require('@aws-sdk/client-rds');
-    const rds = new RDSClient({ region: TARGET_REGION });
-    const tags = mandatoryTags({ requester, sandboxId: sandbox_id, merchantRef: merchant_ref, integrationType: integration_type });
-    const localSnapshotId = `sandbox-src-${sandbox_id}`;
+    const rds = new RDSClient({ region: REGION });
     const dbInstanceId = `sandbox-${sandbox_id}`;
+    const tags = mandatoryTags({ requester, sandboxId: sandbox_id, merchantRef: merchant_ref, integrationType: integration_type });
 
-    const srcRegion = source_region || process.env.STAGING_REGION || 'us-west-1';
-    const isCrossRegion = srcRegion !== TARGET_REGION;
+    let alreadyExists = false;
+    try {
+      const existing = await rds.send(new DescribeDBInstancesCommand({ DBInstanceIdentifier: dbInstanceId }));
+      if (existing.DBInstances?.length) alreadyExists = true;
+    } catch (e) {
+      if (!/DBInstanceNotFound/.test(String(e?.name) + String(e?.message))) throw e;
+    }
 
-    let localSnapshotArn = snapshot_arn;
-    if (isCrossRegion) {
-      await rds.send(new CopyDBSnapshotCommand({
-        SourceDBSnapshotIdentifier: snapshot_arn,
-        TargetDBSnapshotIdentifier: localSnapshotId,
-        SourceRegion: srcRegion,
+    if (!alreadyExists) {
+      const restoreArgs = {
+        DBInstanceIdentifier: dbInstanceId,
+        DBSnapshotIdentifier: GOLDEN_SNAPSHOT,
+        DBInstanceClass: DB_INSTANCE_CLASS,
+        DBSubnetGroupName: SUBNET_GROUP,
+        VpcSecurityGroupIds: RDS_SG_ID ? [RDS_SG_ID] : undefined,
+        MultiAZ: false,
+        PubliclyAccessible: false,
+        AutoMinorVersionUpgrade: true,
+        DeletionProtection: false,
         Tags: tags,
-      }));
-
-      const copyStart = Date.now();
-      while (Date.now() - copyStart < 10 * 60 * 1000) {
-        await sleep(POLL_INTERVAL_MS);
-        const desc = await rds.send(new DescribeDBSnapshotsCommand({ DBSnapshotIdentifier: localSnapshotId }));
-        const snap = desc.DBSnapshots?.[0];
-        if (snap?.Status === 'available') { localSnapshotArn = snap.DBSnapshotArn; break; }
-        if (snap?.Status === 'failed') return error(500, 'snapshot_copy_failed', 'CopyDBSnapshot ended in failed state');
-      }
-      if (!localSnapshotArn || localSnapshotArn === snapshot_arn) {
-        return error(504, 'snapshot_copy_timeout', `CopyDBSnapshot did not finish within 10 minutes (snapshot id: ${localSnapshotId})`);
-      }
+      };
+      await rds.send(new RestoreDBInstanceFromDBSnapshotCommand(restoreArgs));
     }
 
-    await rds.send(new RestoreDBInstanceFromDBSnapshotCommand({
-      DBInstanceIdentifier: dbInstanceId,
-      DBSnapshotIdentifier: localSnapshotArn,
-      DBInstanceClass: DB_INSTANCE_CLASS,
-      MultiAZ: false,
-      PubliclyAccessible: false,
-      Tags: tags,
-    }));
-
-    const restoreStart = Date.now();
-    while (Date.now() - restoreStart < MAX_POLL_MS) {
+    const start = Date.now();
+    let status = 'creating';
+    let endpoint = null;
+    let port = 5432;
+    while (Date.now() - start < FIRE_AND_POLL_BUDGET_MS) {
       await sleep(POLL_INTERVAL_MS);
-      const desc = await rds.send(new DescribeDBInstancesCommand({ DBInstanceIdentifier: dbInstanceId }));
-      const inst = desc.DBInstances?.[0];
-      if (!inst) continue;
-      if (inst.DBInstanceStatus === 'available') {
-        return ok({
-          dbInstanceId,
-          status: 'available',
-          endpoint: inst.Endpoint?.Address || null,
-          port: inst.Endpoint?.Port || 5432,
-          estimatedReadyInSeconds: 0,
-          sourceRegion: srcRegion,
-          copyPerformed: isCrossRegion,
-        });
-      }
-      if (inst.DBInstanceStatus === 'failed' || inst.DBInstanceStatus === 'incompatible-restore') {
-        return error(500, 'rds_restore_failed', `RDS instance entered status "${inst.DBInstanceStatus}"`);
-      }
+      try {
+        const desc = await rds.send(new DescribeDBInstancesCommand({ DBInstanceIdentifier: dbInstanceId }));
+        const inst = desc.DBInstances?.[0];
+        if (!inst) continue;
+        status = inst.DBInstanceStatus || status;
+        endpoint = inst.Endpoint?.Address || null;
+        port = inst.Endpoint?.Port || port;
+        if (status === 'available') break;
+        if (status === 'failed' || status === 'incompatible-restore') {
+          return error(500, 'rds_restore_failed', `RDS entered status "${status}"`);
+        }
+      } catch (_) { /* transient, keep polling */ }
     }
-    return ok({ dbInstanceId, status: 'creating', endpoint: null, port: 5432, estimatedReadyInSeconds: 60, polling_timeout: true });
+
+    return ok({
+      dbInstanceId,
+      status,
+      endpoint,
+      port,
+      sourceSnapshot: GOLDEN_SNAPSHOT,
+      alreadyExisted: alreadyExists,
+      estimatedReadyInSeconds: status === 'available' ? 0 : 300,
+    });
   } catch (e) {
-    return error(500, 'aws_call_failed', e.message);
+    console.error('restore_rds_snapshot failed', e);
+    return error(500, 'aws_call_failed', `${e.name || 'Error'}: ${e.message}`);
   }
 };

@@ -7,18 +7,23 @@
       "Action": [
         "logs:CreateLogGroup",
         "logs:CreateLogStream",
-        "logs:PutLogEvents"
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups"
       ],
       "Resource": "*"
     },
     {
-      "Sid": "RdsForSnapshotAndRestore",
+      "Sid": "RdsLifecycle",
       "Effect": "Allow",
       "Action": [
         "rds:DescribeDBSnapshots",
         "rds:DescribeDBInstances",
+        "rds:DescribeDBSubnetGroups",
         "rds:CopyDBSnapshot",
         "rds:RestoreDBInstanceFromDBSnapshot",
+        "rds:CreateDBSnapshot",
+        "rds:DeleteDBInstance",
+        "rds:ModifyDBInstance",
         "rds:AddTagsToResource"
       ],
       "Resource": "*"
@@ -29,31 +34,76 @@
       "Action": [
         "ecr:DescribeRepositories",
         "ecr:DescribeImages",
-        "ecr:ListImages"
+        "ecr:ListImages",
+        "ecr:GetAuthorizationToken",
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer"
       ],
       "Resource": "*"
     },
     {
-      "Sid": "EcsProvisioning",
+      "Sid": "EcsLifecycle",
       "Effect": "Allow",
       "Action": [
         "ecs:CreateCluster",
         "ecs:RegisterTaskDefinition",
+        "ecs:DeregisterTaskDefinition",
         "ecs:CreateService",
+        "ecs:UpdateService",
+        "ecs:DeleteService",
         "ecs:DescribeServices",
+        "ecs:DescribeClusters",
         "ecs:DescribeTaskDefinition",
+        "ecs:ListServices",
         "ecs:ListTaskDefinitions",
-        "ecs:UpdateService"
+        "ecs:TagResource"
       ],
       "Resource": "*"
     },
     {
-      "Sid": "PassRoleToEcs",
+      "Sid": "Ec2NetworkRead",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeVpcs",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeNetworkInterfaces"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ElbV2Lifecycle",
+      "Effect": "Allow",
+      "Action": [
+        "elasticloadbalancing:CreateTargetGroup",
+        "elasticloadbalancing:DeleteTargetGroup",
+        "elasticloadbalancing:DescribeTargetGroups",
+        "elasticloadbalancing:DescribeTargetHealth",
+        "elasticloadbalancing:ModifyTargetGroup",
+        "elasticloadbalancing:RegisterTargets",
+        "elasticloadbalancing:DeregisterTargets",
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "elasticloadbalancing:DescribeListeners",
+        "elasticloadbalancing:DescribeRules",
+        "elasticloadbalancing:CreateRule",
+        "elasticloadbalancing:DeleteRule",
+        "elasticloadbalancing:ModifyRule",
+        "elasticloadbalancing:AddTags"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PassRoleToEcsAndRds",
       "Effect": "Allow",
       "Action": "iam:PassRole",
       "Resource": "*",
       "Condition": {
-        "StringEquals": { "iam:PassedToService": "ecs-tasks.amazonaws.com" }
+        "StringEquals": {
+          "iam:PassedToService": [
+            "ecs-tasks.amazonaws.com",
+            "rds.amazonaws.com"
+          ]
+        }
       }
     },
     {
