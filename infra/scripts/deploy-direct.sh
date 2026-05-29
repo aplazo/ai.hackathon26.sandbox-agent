@@ -31,12 +31,21 @@ warn(){ printf '   \033[1;33m!\033[0m %s\n' "$*"; }
 fail(){ printf '   \033[1;31m✗\033[0m %s\n' "$*"; exit 1; }
 aw()  { aws --profile "$PROFILE" --region "$REGION" "$@"; }
 
-# Mandatory tags (SCP enforced at creation time for IAM resources)
-OWNER="francisco.lanuza@aplazo.mx"
-EXPIRES="2026-05-30"
-SQUAD="developer-experience"
-TAGS_IAM="Key=project,Value=sandboxagent Key=team,Value=sandboxagent Key=squad,Value=${SQUAD} Key=owner,Value=${OWNER} Key=expires,Value=${EXPIRES} Key=environment,Value=hackathon26"
-TAGS_LAMBDA="project=sandboxagent,team=sandboxagent,squad=${SQUAD},owner=${OWNER},expires=${EXPIRES},environment=hackathon26"
+# Mandatory tags — single source of truth in infra/tags.env (consumed here AND
+# by the Lambda runtime via PROJECT_TAG/TEAM_TAG/etc set further down). SCP
+# enforces these 6 tags at creation time for IAM and most resources.
+TAGS_ENV="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tags.env"
+[[ -f "$TAGS_ENV" ]] || fail "$TAGS_ENV missing — it's the single source of truth for mandatory tags"
+# shellcheck disable=SC1090
+source "$TAGS_ENV"
+OWNER="$TAG_OWNER"
+EXPIRES="$TAG_EXPIRES"
+SQUAD="$TAG_SQUAD"
+PROJECT="$TAG_PROJECT"
+TEAM="$TAG_TEAM"
+ENVIRONMENT="$TAG_ENVIRONMENT"
+TAGS_IAM="Key=project,Value=${PROJECT} Key=team,Value=${TEAM} Key=squad,Value=${SQUAD} Key=owner,Value=${OWNER} Key=expires,Value=${EXPIRES} Key=environment,Value=${ENVIRONMENT}"
+TAGS_LAMBDA="project=${PROJECT},team=${TEAM},squad=${SQUAD},owner=${OWNER},expires=${EXPIRES},environment=${ENVIRONMENT}"
 TAGS_DDB="$TAGS_IAM"
 
 # Environment variables for all Lambdas
@@ -166,7 +175,7 @@ LAMBDAS=(
 )
 
 # Real-AWS env vars (5 Lambdas que tocan recursos AWS reales en POC us-east-1)
-ENV_JSON_REAL_AWS='{"Variables":{"MOCK_MODE":"false","BACKEND_TOKEN":"'"$BACKEND_TOKEN"'","DEFAULT_OWNER":"'"$OWNER"'","RESOURCE_EXPIRES":"'"$EXPIRES"'","SQUAD":"'"$SQUAD"'","SESSIONS_TABLE":"'"$TABLE_NAME"'","POC_ACCOUNT_ID":"'"$ACCOUNT_ID"'","RDS_GOLDEN_SNAPSHOT":"'"${RDS_GOLDEN_SNAPSHOT:-sandboxagent-golden-v1}"'","RDS_SUBNET_GROUP":"'"${RDS_SUBNET_GROUP:-sandboxagent-subnet-group}"'","RDS_SG_ID":"'"${RDS_SG_ID:-}"'","ECS_CLUSTER":"'"${ECS_CLUSTER:-poc-hackaton-cluster}"'","ECS_SG_ID":"'"${ECS_SG_ID:-}"'","SUBNET_IDS":"'"${SUBNET_IDS:-}"'","VPC_ID":"'"${VPC_ID:-}"'","TASK_EXECUTION_ROLE_ARN":"'"${TASK_EXECUTION_ROLE_ARN:-}"'","ECR_IMAGE_URI":"'"${ECR_IMAGE_URI:-}"'","LISTENER_ARN":"'"${LISTENER_ARN:-}"'","SANDBOX_BASE_HOST":"'"${SANDBOX_BASE_HOST:-}"'"}}'
+ENV_JSON_REAL_AWS='{"Variables":{"MOCK_MODE":"false","BACKEND_TOKEN":"'"$BACKEND_TOKEN"'","DEFAULT_OWNER":"'"$OWNER"'","RESOURCE_EXPIRES":"'"$EXPIRES"'","SQUAD":"'"$SQUAD"'","PROJECT_TAG":"'"$PROJECT"'","TEAM_TAG":"'"$TEAM"'","ENVIRONMENT_TAG":"'"$ENVIRONMENT"'","SESSIONS_TABLE":"'"$TABLE_NAME"'","POC_ACCOUNT_ID":"'"$ACCOUNT_ID"'","RDS_GOLDEN_SNAPSHOT":"'"${RDS_GOLDEN_SNAPSHOT:-sandboxagent-golden-v1}"'","RDS_SUBNET_GROUP":"'"${RDS_SUBNET_GROUP:-sandboxagent-subnet-group}"'","RDS_SG_ID":"'"${RDS_SG_ID:-}"'","ECS_CLUSTER":"'"${ECS_CLUSTER:-poc-hackaton-cluster}"'","ECS_SG_ID":"'"${ECS_SG_ID:-}"'","SUBNET_IDS":"'"${SUBNET_IDS:-}"'","VPC_ID":"'"${VPC_ID:-}"'","TASK_EXECUTION_ROLE_ARN":"'"${TASK_EXECUTION_ROLE_ARN:-}"'","ECR_IMAGE_URI":"'"${ECR_IMAGE_URI:-}"'","LISTENER_ARN":"'"${LISTENER_ARN:-}"'","SANDBOX_BASE_HOST":"'"${SANDBOX_BASE_HOST:-}"'"}}'
 
 # Real-HTTP env vars (create_merchant + validate_sandbox — call real Aplazo APIs)
 ENV_JSON_REAL_HTTP='{"Variables":{"MOCK_MODE":"false","BACKEND_TOKEN":"'"$BACKEND_TOKEN"'","DEFAULT_OWNER":"'"$OWNER"'","RESOURCE_EXPIRES":"'"$EXPIRES"'","SQUAD":"'"$SQUAD"'","MERCHANT_CREATION_URL":"'"$MERCHANT_CREATION_URL"'","BRANCH_URL":"'"$BRANCH_URL"'","APLAZO_API_BASE":"'"$APLAZO_API_BASE"'"}}'
@@ -227,7 +236,7 @@ if [[ -z "$API_ID" || "$API_ID" == "None" ]]; then
     --name "$API_NAME" \
     --protocol-type HTTP \
     --cors-configuration "AllowOrigins=*,AllowMethods=POST,OPTIONS,AllowHeaders=content-type,authorization" \
-    --tags "project=sandboxagent,team=sandboxagent,squad=${SQUAD},owner=${OWNER},expires=${EXPIRES},environment=hackathon26" \
+    --tags "$TAGS_LAMBDA" \
     --query 'ApiId' --output text)
   ok "created — ApiId: $API_ID"
 else
