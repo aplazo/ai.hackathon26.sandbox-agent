@@ -50,7 +50,7 @@ exports.handler = async (event) => {
           runningCount = svc.runningCount || 0;
           if (runningCount >= 1) break;
         }
-      } catch (_) { /* transient */ }
+      } catch (e) { console.debug('configure_merchant service poll transient:', e?.name || e?.message); }
     }
   } catch (e) {
     console.error('configure_merchant probe failed', e);
