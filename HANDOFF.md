@@ -6,6 +6,8 @@
 > **Current branch:** `master` · last commit: `e842ff0`
 
 > **For a high-level project brief (team-facing)** see [`STATUS.md`](./STATUS.md). For local dev setup, see [`README.md`](./README.md).
+>
+> **Code-quality refactor in review (2026-05-29):** a full architecture review produced 3 open PRs (#1 Phase 0 shared-layer consolidation + deploy-script fixes, #2 fail-closed auth, #3 Phase 1 hygiene) — all **no functionality change** except the flagged fail-closed auth. Merge order #1 → #3 (stacked); #2 independent. Full technical detail + remaining backlog (Phase 2 security, Phase 3 scale) in [`REFACTOR-BACKLOG.md`](./REFACTOR-BACKLOG.md). Team-facing summary in [`STATUS.md`](./STATUS.md#refactor-de-calidad-de-código--2026-05-29-en-review).
 
 ---
 
