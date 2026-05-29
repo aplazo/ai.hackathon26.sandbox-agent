@@ -1,5 +1,9 @@
+// Lockable via the CORS_ALLOW_ORIGIN env var (e.g. "https://www.aplazo.ai").
+// Defaults to "*" to preserve current behavior — set it in deploy-direct.sh to
+// restrict access without a code change.
+const CORS_ALLOW_ORIGIN = process.env.CORS_ALLOW_ORIGIN || '*';
 const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': CORS_ALLOW_ORIGIN,
   'Access-Control-Allow-Headers': 'Content-Type,Authorization',
   'Access-Control-Allow-Methods': 'POST,OPTIONS',
 };
