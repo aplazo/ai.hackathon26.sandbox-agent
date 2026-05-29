@@ -1,7 +1,11 @@
 const { ok, error, parseBody } = require('../shared/response');
 const { checkBearer } = require('../shared/auth');
 const { mockDeployEcs } = require('../shared/mock-data');
-const { mandatoryTags } = require('../shared/tags');
+const { mandatoryTags, ecsTags, elbTags } = require('../shared/tags');
+const { isAwsError, sleep } = require('../shared/aws-errors');
+const { shortId: toShortId, taskFamily, ecsService, targetGroup, pathPrefix } = require('../shared/naming');
+const ecsLib = require('@aws-sdk/client-ecs');
+const elbLib = require('@aws-sdk/client-elastic-load-balancing-v2');
 
 const MOCK_MODE = process.env.MOCK_MODE === 'true';
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -16,7 +20,9 @@ const SANDBOX_BASE_HOST = process.env.SANDBOX_BASE_HOST || '';
 const FIRE_POLL_BUDGET_MS = 20_000;
 const POLL_INTERVAL_MS = 5_000;
 
-async function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+// Module-scoped singletons — reused across warm invocations.
+const ecs = new ecsLib.ECSClient({ region: REGION });
+const elb = new elbLib.ElasticLoadBalancingV2Client({ region: REGION });
 
 function hashPriority(s) {
   let h = 0;
@@ -58,21 +64,15 @@ exports.handler = async (event) => {
   }
 
   try {
-    const ecsLib = require('@aws-sdk/client-ecs');
-    const elbLib = require('@aws-sdk/client-elastic-load-balancing-v2');
-    const ecs = new ecsLib.ECSClient({ region: REGION });
-    const elb = new elbLib.ElasticLoadBalancingV2Client({ region: REGION });
-
-    const shortId = String(sandbox_id).replace(/^sb_?/, '').slice(0, 12);
-    const family = `sba-${shortId}-td`;
-    const serviceName = `sba-${shortId}-svc`;
-    const tgName = `sba-${shortId}-tg`;
-    const ruleName = `sba-${shortId}-rule`;
-    const pathPrefix = `/sandbox-${shortId}`;
+    const family = taskFamily(sandbox_id);
+    const serviceName = ecsService(sandbox_id);
+    const tgName = targetGroup(sandbox_id);
+    const prefix = pathPrefix(sandbox_id);
+    const shortId = toShortId(sandbox_id);
     const tags = mandatoryTags({ requester, sandboxId: sandbox_id, merchantRef: merchant_id, integrationType: integration_type });
-    const tagsKV = tags.map((t) => ({ key: t.Key, value: t.Value }));
-    const tagsKeyValue = tags.map((t) => ({ Key: t.Key, Value: t.Value }));
-    const sandboxUrl = SANDBOX_BASE_HOST ? `http://${SANDBOX_BASE_HOST}${pathPrefix}/` : null;
+    const tagsKV = ecsTags(tags);
+    const tagsKeyValue = elbTags(tags);
+    const sandboxUrl = SANDBOX_BASE_HOST ? `http://${SANDBOX_BASE_HOST}${prefix}/` : null;
 
     // 1. Register task definition with sandbox-specific env vars
     const taskDef = await ecs.send(new ecsLib.RegisterTaskDefinitionCommand({
@@ -131,7 +131,7 @@ exports.handler = async (event) => {
       }));
       tgArn = tgRes.TargetGroups[0].TargetGroupArn;
     } catch (e) {
-      if (/DuplicateTargetGroupName/.test(String(e?.name) + String(e?.message))) {
+      if (isAwsError(e, 'DuplicateTargetGroupName')) {
         const found = await elb.send(new elbLib.DescribeTargetGroupsCommand({ Names: [tgName] }));
         tgArn = found.TargetGroups[0].TargetGroupArn;
       } else throw e;
@@ -143,7 +143,7 @@ exports.handler = async (event) => {
     try {
       const rules = await elb.send(new elbLib.DescribeRulesCommand({ ListenerArn: LISTENER_ARN }));
       const existing = (rules.Rules || []).find((r) =>
-        r.Conditions?.some((c) => c.PathPatternConfig?.Values?.includes(`${pathPrefix}/*`)));
+        r.Conditions?.some((c) => c.PathPatternConfig?.Values?.includes(`${prefix}/*`)));
       if (existing) {
         ruleArn = existing.RuleArn;
       } else {
@@ -154,14 +154,14 @@ exports.handler = async (event) => {
             const ruleRes = await elb.send(new elbLib.CreateRuleCommand({
               ListenerArn: LISTENER_ARN,
               Priority: basePriority + attempts,
-              Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: [`${pathPrefix}/*`, pathPrefix] } }],
+              Conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: [`${prefix}/*`, prefix] } }],
               Actions: [{ Type: 'forward', TargetGroupArn: tgArn }],
               Tags: tagsKeyValue,
             }));
             ruleArn = ruleRes.Rules[0].RuleArn;
             break;
           } catch (e) {
-            if (/PriorityInUse/.test(String(e?.name) + String(e?.message))) { attempts++; continue; }
+            if (isAwsError(e, 'PriorityInUse')) { attempts++; continue; }
             throw e;
           }
         }
@@ -192,7 +192,7 @@ exports.handler = async (event) => {
         tags: tagsKV,
       }));
     } catch (e) {
-      if (!/ServiceAlreadyExists/.test(String(e?.name) + String(e?.message))) throw e;
+      if (!isAwsError(e, 'ServiceAlreadyExists')) throw e;
     }
 
     // 5. Fire-and-poll-short

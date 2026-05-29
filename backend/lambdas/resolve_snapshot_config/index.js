@@ -1,6 +1,8 @@
 const { ok, error, parseBody } = require('../shared/response');
 const { checkBearer } = require('../shared/auth');
 const { mockSnapshotConfig } = require('../shared/mock-data');
+const { isAuroraClusterSnapshot } = require('../shared/snapshot');
+const { RDSClient, DescribeDBSnapshotsCommand, DescribeDBClusterSnapshotsCommand } = require('@aws-sdk/client-rds');
 
 const MOCK_MODE = process.env.MOCK_MODE === 'true';
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -8,7 +10,8 @@ const ACCOUNT_ID = process.env.POC_ACCOUNT_ID || '332730082760';
 const GOLDEN_SNAPSHOT = process.env.RDS_GOLDEN_SNAPSHOT || 'sandboxagent-golden-v1';
 const ECR_IMAGE_URI = process.env.ECR_IMAGE_URI || `${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/sandboxagent/checkout:latest`;
 
-function isAuroraClusterSnapshot(id) { return /cluster-snapshot/.test(String(id || '')); }
+// Module-scoped singleton — reused across warm invocations.
+const rds = new RDSClient({ region: REGION });
 
 /**
  * Tool 1 — resolve_snapshot_config
@@ -30,8 +33,6 @@ exports.handler = async (event) => {
   if (MOCK_MODE) return ok(mockSnapshotConfig());
 
   try {
-    const { RDSClient, DescribeDBSnapshotsCommand, DescribeDBClusterSnapshotsCommand } = require('@aws-sdk/client-rds');
-    const rds = new RDSClient({ region: REGION });
     const isAurora = isAuroraClusterSnapshot(GOLDEN_SNAPSHOT);
 
     let snapshotArn = null;

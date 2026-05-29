@@ -2,6 +2,9 @@ const { ok, error, parseBody } = require('../shared/response');
 const { checkBearer } = require('../shared/auth');
 const { mockConfigureMerchant } = require('../shared/mock-data');
 const { syntheticUserId, isoNow } = require('../shared/ids');
+const { sleep } = require('../shared/aws-errors');
+const { ecsService } = require('../shared/naming');
+const { ECSClient, DescribeServicesCommand } = require('@aws-sdk/client-ecs');
 
 const MOCK_MODE = process.env.MOCK_MODE === 'true';
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -9,7 +12,8 @@ const CLUSTER = process.env.ECS_CLUSTER || 'poc-hackaton-cluster';
 const POLL_BUDGET_MS = 15_000;
 const POLL_INTERVAL_MS = 3_000;
 
-async function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+// Module-scoped singleton — reused across warm invocations.
+const ecs = new ECSClient({ region: REGION });
 
 /**
  * Tool 5 — configure_merchant
@@ -30,15 +34,11 @@ exports.handler = async (event) => {
 
   if (MOCK_MODE) return ok(mockConfigureMerchant({ merchantId: merchant_id }));
 
-  const shortId = String(sandbox_id).replace(/^sb_?/, '').slice(0, 12);
-  const serviceName = `sba-${shortId}-svc`;
+  const serviceName = ecsService(sandbox_id);
   let serviceStatus = 'UNKNOWN';
   let runningCount = 0;
 
   try {
-    const { ECSClient, DescribeServicesCommand } = require('@aws-sdk/client-ecs');
-    const ecs = new ECSClient({ region: REGION });
-
     const start = Date.now();
     while (Date.now() - start < POLL_BUDGET_MS) {
       await sleep(POLL_INTERVAL_MS);
