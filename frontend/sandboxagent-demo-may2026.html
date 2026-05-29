@@ -398,11 +398,11 @@ function initLogin() {
 document.addEventListener('DOMContentLoaded', initLogin);
 
 const STEPS = [
-  { key: 'resolve_snapshot_config', title: 'Resolve snapshot + ECR images', desc: 'Looking up the latest clean staging snapshot and core service images.' },
+  { key: 'resolve_snapshot_config', title: 'Resolve snapshot + ECR image',  desc: 'Looking up the staging snapshot and the checkout service image.' },
   { key: 'restore_rds_snapshot',    title: 'Restore RDS snapshot',          desc: 'Spinning up an isolated database from the snapshot.' },
   { key: 'create_merchant',         title: 'Create merchant (+ branch)',    desc: 'Generating a fresh merchant via the Merchant Creation Lambda.' },
-  { key: 'deploy_ecs_services',     title: 'Deploy ECS services',           desc: 'Launching checkout-api, merchant-api and payment-engine on Fargate.' },
-  { key: 'configure_merchant',      title: 'Configure merchant in ECS',     desc: 'Injecting merchant_id + api_token into the running services.' },
+  { key: 'deploy_ecs_services',     title: 'Deploy ECS service',            desc: 'Launching the per-sandbox checkout container on Fargate behind an ALB path rule.' },
+  { key: 'configure_merchant',      title: 'Configure merchant in ECS',     desc: 'Confirming the ECS service is healthy and preparing the synthetic user.' },
   { key: 'validate_sandbox',        title: 'Validate sandbox (Online API)', desc: 'Calling /auth + /loan against api.aplazo.net to verify the sandbox.' },
   { key: 'save_session',            title: 'Save session',                  desc: 'Persisting the sandbox configuration in DynamoDB.' },
 ];
@@ -410,7 +410,7 @@ const STEPS = [
 const TOOLS = [
   {
     name: 'resolve_snapshot_config',
-    description: 'Resolve the latest clean staging RDS snapshot ARN and the ECR image URIs for the core services (checkout-api, merchant-api, payment-engine). MUST be the first tool you call.',
+    description: 'Resolve the staging RDS snapshot ARN and the ECR image URI for the per-sandbox checkout service. MUST be the first tool you call.',
     input_schema: { type: 'object', required: ['merchant_id'], properties: { merchant_id: { type: 'string' } } },
   },
   {
@@ -444,14 +444,13 @@ const TOOLS = [
   },
   {
     name: 'deploy_ecs_services',
-    description: 'Create an ECS cluster + 3 Fargate services (checkout-api, merchant-api, payment-engine) pointing at the new DB endpoint. Returns the sandbox base URL.',
+    description: 'Launch the per-sandbox checkout container as a Fargate service on the shared ECS cluster, behind an ALB path rule, pointing at the new DB endpoint. Returns the sandbox base URL.',
     input_schema: {
       type: 'object',
-      required: ['sandbox_id', 'core_images'],
+      required: ['sandbox_id'],
       properties: {
         sandbox_id:  { type: 'string' },
         db_endpoint: { type: 'string' },
-        core_images: { type: 'array', items: { type: 'object', properties: { service: { type: 'string' }, imageUri: { type: 'string' } } } },
         merchant_id: { type: 'string' },
         requester:   { type: 'string' },
       },
@@ -459,7 +458,7 @@ const TOOLS = [
   },
   {
     name: 'configure_merchant',
-    description: 'Inject MERCHANT_ID, API_TOKEN and INTEGRATION_TYPE as env vars in the ECS services and prepare the synthetic user. Use the merchant_id and api_token returned by create_merchant.',
+    description: 'Confirm the ECS service is healthy and prepare the synthetic user. (The merchant env vars are already baked into the task definition at deploy time.) Use the merchant_id returned by create_merchant.',
     input_schema: {
       type: 'object',
       required: ['sandbox_id', 'merchant_id'],
@@ -505,14 +504,14 @@ const TOOLS = [
 
 const SYSTEM_PROMPT = `You are SandboxAgent, an internal AWS sandbox provisioning agent for APLAZO engineers, QA and integration merchants.
 
-Your job: provision an isolated staging sandbox for a single merchant by calling 7 tools in strict order. Each sandbox has its OWN RDS instance, ECS cluster, and freshly-generated merchant credentials. No state is reused between sandboxes.
+Your job: provision an isolated staging sandbox for a single merchant by calling 7 tools in strict order. Each sandbox has its OWN RDS instance, ECS service, and freshly-generated merchant credentials. No state is reused between sandboxes.
 
 PROVISIONING SEQUENCE (call these tools in this exact order, ONE at a time):
-  1. resolve_snapshot_config  — discover the snapshot + ECR images
+  1. resolve_snapshot_config  — discover the snapshot + checkout ECR image
   2. restore_rds_snapshot     — restore the snapshot to a new RDS instance
   3. create_merchant          — create a fresh merchant (and branch if API_OFFLINE)
-  4. deploy_ecs_services      — launch Fargate services pointed at the new DB
-  5. configure_merchant       — inject merchant_id + api_token from step 3 into ECS
+  4. deploy_ecs_services      — launch the Fargate checkout service pointed at the new DB
+  5. configure_merchant       — confirm the ECS service is healthy + prepare the synthetic user
   6. validate_sandbox         — verify via api.aplazo.net /auth + /loan
   7. save_session             — persist a labeled session
 
