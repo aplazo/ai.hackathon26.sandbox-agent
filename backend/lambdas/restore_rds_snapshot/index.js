@@ -2,6 +2,17 @@ const { ok, error, parseBody } = require('../shared/response');
 const { checkBearer } = require('../shared/auth');
 const { mockRestoreRds } = require('../shared/mock-data');
 const { mandatoryTags } = require('../shared/tags');
+const { isAuroraClusterSnapshot } = require('../shared/snapshot');
+const { isAwsError, sleep } = require('../shared/aws-errors');
+const { rdsInstance, auroraCluster, auroraInstance } = require('../shared/naming');
+const {
+  RDSClient,
+  DescribeDBInstancesCommand,
+  RestoreDBInstanceFromDBSnapshotCommand,
+  DescribeDBClustersCommand,
+  RestoreDBClusterFromSnapshotCommand,
+  CreateDBInstanceCommand,
+} = require('@aws-sdk/client-rds');
 
 const MOCK_MODE = process.env.MOCK_MODE === 'true';
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -13,11 +24,8 @@ const RDS_SG_ID = process.env.RDS_SG_ID || '';
 const POLL_INTERVAL_MS = 5000;
 const FIRE_AND_POLL_BUDGET_MS = 20_000;
 
-async function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
-
-function isAuroraClusterSnapshot(snapshotId) {
-  return /cluster-snapshot/.test(String(snapshotId || ''));
-}
+// Module-scoped singleton — reused across warm invocations.
+const rds = new RDSClient({ region: REGION });
 
 /**
  * Tool 2 — restore_rds_snapshot (REAL, hackathon variant)
@@ -55,13 +63,10 @@ exports.handler = async (event) => {
   const tags = mandatoryTags({ requester, sandboxId: sandbox_id, merchantRef: merchant_ref, integrationType: integration_type });
 
   try {
-    const rdsLib = require('@aws-sdk/client-rds');
-    const rds = new rdsLib.RDSClient({ region: REGION });
-
     if (isAurora) {
-      return await restoreAuroraCluster({ rds, rdsLib, sandbox_id, snapshotId, tags });
+      return await restoreAuroraCluster({ sandbox_id, snapshotId, tags });
     }
-    return await restoreRegularInstance({ rds, rdsLib, sandbox_id, snapshotId, tags });
+    return await restoreRegularInstance({ sandbox_id, snapshotId, tags });
   } catch (e) {
     console.error('restore_rds_snapshot failed', e);
     return error(500, 'aws_call_failed', `${e.name || 'Error'}: ${e.message}`);
@@ -71,19 +76,19 @@ exports.handler = async (event) => {
 // ============================================================================
 //   Regular RDS DB instance path  (sandboxagent-golden-v1)
 // ============================================================================
-async function restoreRegularInstance({ rds, rdsLib, sandbox_id, snapshotId, tags }) {
-  const dbInstanceId = `sandbox-${sandbox_id}`;
+async function restoreRegularInstance({ sandbox_id, snapshotId, tags }) {
+  const dbInstanceId = rdsInstance(sandbox_id);
 
   let alreadyExists = false;
   try {
-    const existing = await rds.send(new rdsLib.DescribeDBInstancesCommand({ DBInstanceIdentifier: dbInstanceId }));
+    const existing = await rds.send(new DescribeDBInstancesCommand({ DBInstanceIdentifier: dbInstanceId }));
     if (existing.DBInstances?.length) alreadyExists = true;
   } catch (e) {
-    if (!/DBInstanceNotFound/.test(String(e?.name) + String(e?.message))) throw e;
+    if (!isAwsError(e, 'DBInstanceNotFound')) throw e;
   }
 
   if (!alreadyExists) {
-    await rds.send(new rdsLib.RestoreDBInstanceFromDBSnapshotCommand({
+    await rds.send(new RestoreDBInstanceFromDBSnapshotCommand({
       DBInstanceIdentifier: dbInstanceId,
       DBSnapshotIdentifier: snapshotId,
       DBInstanceClass: DB_INSTANCE_CLASS,
@@ -104,7 +109,7 @@ async function restoreRegularInstance({ rds, rdsLib, sandbox_id, snapshotId, tag
   while (Date.now() - start < FIRE_AND_POLL_BUDGET_MS) {
     await sleep(POLL_INTERVAL_MS);
     try {
-      const desc = await rds.send(new rdsLib.DescribeDBInstancesCommand({ DBInstanceIdentifier: dbInstanceId }));
+      const desc = await rds.send(new DescribeDBInstancesCommand({ DBInstanceIdentifier: dbInstanceId }));
       const inst = desc.DBInstances?.[0];
       if (!inst) continue;
       status = inst.DBInstanceStatus || status;
@@ -132,20 +137,20 @@ async function restoreRegularInstance({ rds, rdsLib, sandbox_id, snapshotId, tag
 // ============================================================================
 //   Aurora PostgreSQL cluster path  (apzdbstg-hackathon-east1 once KMS unblocks)
 // ============================================================================
-async function restoreAuroraCluster({ rds, rdsLib, sandbox_id, snapshotId, tags }) {
-  const clusterId = `sandbox-${sandbox_id}-cluster`;
-  const instanceId = `sandbox-${sandbox_id}-i1`;
+async function restoreAuroraCluster({ sandbox_id, snapshotId, tags }) {
+  const clusterId = auroraCluster(sandbox_id);
+  const instanceId = auroraInstance(sandbox_id);
 
   // ----- 1. Create cluster from snapshot (idempotent) -----
   let clusterExists = false;
   try {
-    const out = await rds.send(new rdsLib.DescribeDBClustersCommand({ DBClusterIdentifier: clusterId }));
+    const out = await rds.send(new DescribeDBClustersCommand({ DBClusterIdentifier: clusterId }));
     if (out.DBClusters?.length) clusterExists = true;
   } catch (e) {
-    if (!/DBClusterNotFound/.test(String(e?.name) + String(e?.message))) throw e;
+    if (!isAwsError(e, 'DBClusterNotFound')) throw e;
   }
   if (!clusterExists) {
-    await rds.send(new rdsLib.RestoreDBClusterFromSnapshotCommand({
+    await rds.send(new RestoreDBClusterFromSnapshotCommand({
       DBClusterIdentifier: clusterId,
       SnapshotIdentifier: snapshotId,
       Engine: 'aurora-postgresql',
@@ -159,14 +164,14 @@ async function restoreAuroraCluster({ rds, rdsLib, sandbox_id, snapshotId, tags 
   // ----- 2. Create instance inside cluster (idempotent) -----
   let instanceExists = false;
   try {
-    const out = await rds.send(new rdsLib.DescribeDBInstancesCommand({ DBInstanceIdentifier: instanceId }));
+    const out = await rds.send(new DescribeDBInstancesCommand({ DBInstanceIdentifier: instanceId }));
     if (out.DBInstances?.length) instanceExists = true;
   } catch (e) {
-    if (!/DBInstanceNotFound/.test(String(e?.name) + String(e?.message))) throw e;
+    if (!isAwsError(e, 'DBInstanceNotFound')) throw e;
   }
   if (!instanceExists) {
     try {
-      await rds.send(new rdsLib.CreateDBInstanceCommand({
+      await rds.send(new CreateDBInstanceCommand({
         DBInstanceIdentifier: instanceId,
         DBClusterIdentifier: clusterId,
         Engine: 'aurora-postgresql',
@@ -178,7 +183,7 @@ async function restoreAuroraCluster({ rds, rdsLib, sandbox_id, snapshotId, tags 
     } catch (e) {
       // The cluster might not be ready for instance creation yet. Tolerate and
       // surface a status so the agent can retry / proceed.
-      if (!/InvalidDBCluster|DBClusterNotFound/.test(String(e?.name) + String(e?.message))) throw e;
+      if (!isAwsError(e, 'InvalidDBCluster', 'DBClusterNotFound')) throw e;
     }
   }
 
@@ -191,7 +196,7 @@ async function restoreAuroraCluster({ rds, rdsLib, sandbox_id, snapshotId, tags 
   while (Date.now() - start < FIRE_AND_POLL_BUDGET_MS) {
     await sleep(POLL_INTERVAL_MS);
     try {
-      const desc = await rds.send(new rdsLib.DescribeDBClustersCommand({ DBClusterIdentifier: clusterId }));
+      const desc = await rds.send(new DescribeDBClustersCommand({ DBClusterIdentifier: clusterId }));
       const cluster = desc.DBClusters?.[0];
       if (cluster) {
         status = cluster.Status || status;

@@ -1,4 +1,4 @@
-const { isoNow } = require('./ids');
+const { isoNow, syntheticUserId } = require('./ids');
 
 const BRANCH_REQUIRED = new Set(['API_OFFLINE']);
 
@@ -66,7 +66,7 @@ function mockConfigureMerchant({ merchantId }) {
   return {
     merchantId,
     displayName: typeof merchantId === 'string' ? merchantId : `merchant_${merchantId}`,
-    syntheticUserId: `synthetic_${Math.random().toString(36).slice(2, 9)}`,
+    syntheticUserId: syntheticUserId(),
     creditLimit: 10000,
     creditUsed: 0,
     configuredAt: isoNow(),

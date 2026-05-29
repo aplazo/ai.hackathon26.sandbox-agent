@@ -1,6 +1,7 @@
 const { ok, error, parseBody } = require('../shared/response');
 const { checkBearer } = require('../shared/auth');
 const { mockCreateMerchant, branchRequired, SUPPORTED_INTEGRATION_TYPES } = require('../shared/mock-data');
+const { compactTimestamp } = require('../shared/ids');
 
 const MOCK_MODE = process.env.MOCK_MODE === 'true';
 const MERCHANT_CREATION_URL = process.env.MERCHANT_CREATION_URL
@@ -8,10 +9,6 @@ const MERCHANT_CREATION_URL = process.env.MERCHANT_CREATION_URL
 const BRANCH_URL = process.env.BRANCH_URL
   || 'https://merchant.aplazo.net/merchant/create-branch';
 const DEFAULT_CUSTOMER_FEE = 0.18;
-
-function timestamp() {
-  return new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-}
 
 exports.handler = async (event) => {
   const auth = checkBearer(event);
@@ -30,7 +27,7 @@ exports.handler = async (event) => {
     return ok(mockCreateMerchant({ merchantRef: merchant_ref, integrationType: integration_type }));
   }
 
-  const commerceName = `SandboxAgent ${merchant_ref} ${timestamp()}`;
+  const commerceName = `SandboxAgent ${merchant_ref} ${compactTimestamp()}`;
   const fee = typeof customer_fee === 'number' ? customer_fee : DEFAULT_CUSTOMER_FEE;
 
   let createRes;

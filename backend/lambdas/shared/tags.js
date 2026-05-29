@@ -16,4 +16,9 @@ function mandatoryTags({ requester, sandboxId, merchantRef, integrationType }) {
   return tags;
 }
 
-module.exports = { mandatoryTags };
+// Shape adapters for the two casing conventions the AWS SDKs expect.
+// ELBv2 / RDS use PascalCase {Key, Value}; ECS uses lowercase {key, value}.
+const elbTags = (tags) => tags.map((t) => ({ Key: t.Key, Value: t.Value }));
+const ecsTags = (tags) => tags.map((t) => ({ key: t.Key, value: t.Value }));
+
+module.exports = { mandatoryTags, elbTags, ecsTags };

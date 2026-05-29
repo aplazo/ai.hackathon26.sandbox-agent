@@ -1,10 +1,15 @@
 const { ok, error, parseBody } = require('../shared/response');
 const { checkBearer } = require('../shared/auth');
 const { sessionId, isoNow, expiresAt, unixExpiry } = require('../shared/ids');
+const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
 
 const MOCK_MODE = process.env.MOCK_MODE === 'true';
 const TABLE_NAME = process.env.SESSIONS_TABLE || 'sandboxagent-sessions';
 const TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || '10');
+
+// Module-scoped singleton — reused across warm invocations.
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 exports.handler = async (event) => {
   const auth = checkBearer(event);
@@ -34,9 +39,6 @@ exports.handler = async (event) => {
   }
 
   try {
-    const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-    const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
-    const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
     await ddb.send(new PutCommand({ TableName: TABLE_NAME, Item: item }));
     return ok({ success: true, sessionId: id, label, expiresAt: item.expiresAt });
   } catch (e) {

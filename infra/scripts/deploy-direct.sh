@@ -22,6 +22,15 @@ TABLE_NAME="${STACK_PREFIX}-sessions"
 API_NAME="${STACK_PREFIX}-api"
 STAGE_NAME="sandbox"
 
+# Output helpers — defined early so every block below (incl. the env-var
+# warnings) can use them. (Previously defined further down, which made an
+# early `warn` call crash under `set -e`.)
+log() { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
+ok()  { printf '   \033[1;32m✓\033[0m %s\n' "$*"; }
+warn(){ printf '   \033[1;33m!\033[0m %s\n' "$*"; }
+fail(){ printf '   \033[1;31m✗\033[0m %s\n' "$*"; exit 1; }
+aw()  { aws --profile "$PROFILE" --region "$REGION" "$@"; }
+
 # Mandatory tags (SCP enforced at creation time for IAM resources)
 OWNER="francisco.lanuza@aplazo.mx"
 EXPIRES="2026-05-30"
@@ -68,12 +77,6 @@ BACKEND="$PROJECT_ROOT/backend"
 INFRA="$PROJECT_ROOT/infra"
 WORK="/tmp/sandboxagent-deploy"
 mkdir -p "$WORK"
-
-log() { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
-ok()  { printf '   \033[1;32m✓\033[0m %s\n' "$*"; }
-warn(){ printf '   \033[1;33m!\033[0m %s\n' "$*"; }
-fail(){ printf '   \033[1;31m✗\033[0m %s\n' "$*"; exit 1; }
-aw()  { aws --profile "$PROFILE" --region "$REGION" "$@"; }
 
 # -------------------------------------------------------------------------
 # 1. IAM execution role for all Lambdas
@@ -297,13 +300,14 @@ log "Deploy complete"
 echo
 echo "  ApiBasePath:    $API_URL"
 echo "  ApiId:          $API_ID"
-echo "  BackendToken:   $BACKEND_TOKEN"
+echo "  BackendToken:   (hidden — read from /tmp/sandboxagent-backend-token.txt)"
 echo "  Role ARN:       $ROLE_ARN"
 echo "  Sessions table: $TABLE_NAME"
 echo
-echo "Smoke test:"
+echo "Smoke test (token is read from the file, not printed here):"
+echo "  TOKEN=\$(cat /tmp/sandboxagent-backend-token.txt)"
 echo "  curl -X POST '$API_URL/resolve-snapshot' \\"
-echo "    -H 'Authorization: Bearer $BACKEND_TOKEN' \\"
+echo "    -H \"Authorization: Bearer \$TOKEN\" \\"
 echo "    -H 'Content-Type: application/json' \\"
 echo "    -d '{\"merchant_id\":\"walmart_mx\"}'"
 echo

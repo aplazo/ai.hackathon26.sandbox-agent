@@ -1,11 +1,18 @@
+const { randomInt } = require('crypto');
+
 const ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
 
 function randomId(length = 8) {
   let out = '';
   for (let i = 0; i < length; i++) {
-    out += ALPHABET[Math.floor(Math.random() * ALPHABET.length)];
+    out += ALPHABET[randomInt(ALPHABET.length)];
   }
   return out;
+}
+
+/** Compact UTC timestamp YYYYMMDDHHmmss — used in generated commerce names. */
+function compactTimestamp() {
+  return new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
 }
 
 function sandboxId() {
@@ -34,4 +41,4 @@ function unixExpiry(daysFromNow) {
   return Math.floor(Date.now() / 1000) + daysFromNow * 86400;
 }
 
-module.exports = { randomId, sandboxId, sessionId, syntheticUserId, isoNow, expiresAt, unixExpiry };
+module.exports = { randomId, sandboxId, sessionId, syntheticUserId, isoNow, expiresAt, unixExpiry, compactTimestamp };
