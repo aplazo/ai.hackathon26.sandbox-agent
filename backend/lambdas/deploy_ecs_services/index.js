@@ -207,7 +207,7 @@ exports.handler = async (event) => {
           runningCount = svc.runningCount || 0;
           if (runningCount >= 1) break;
         }
-      } catch (_) { /* keep polling */ }
+      } catch (e) { console.debug('deploy_ecs service poll transient:', e?.name || e?.message); }
     }
 
     return ok({

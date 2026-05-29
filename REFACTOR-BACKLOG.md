@@ -11,7 +11,7 @@
 
 ---
 
-## ✅ Done (Phase 0 + Phase 1 hygiene)
+## ✅ Done (Phase 0)
 
 - **D1–D9 duplication removed** — new `shared/aws-errors.js` (`isAwsError`,
   `sleep`, `pollUntil`), `shared/snapshot.js`, `shared/naming.js`; tag-shape
@@ -24,17 +24,26 @@
 
 All verified behavior-preserving (handler load + helper-equivalence harness).
 
+## ✅ Done (Phase 1 hygiene)
+
+- **M2** — poll loops log transient errors at debug instead of `catch (_) {}`.
+- **P7** — `mock-data.js` re-synced to the real single-`checkout`-service shapes
+  (was 3 services + subdomain URLs) and documented as local-dev only.
+- **D7** — 6 mandatory tags single-sourced in `infra/tags.env`; `deploy-direct.sh`
+  and `tags.js` both consume it (no more hardcoded copies in two places).
+- **S5 (partial)** — CORS allow-origin made configurable via `CORS_ALLOW_ORIGIN`
+  (default `*`); lockdown is now a one-line env change.
+- **B3** — frontend `TOOLS`/`STEPS`/`SYSTEM_PROMPT` aligned to the real single
+  checkout service; removed the phantom required `core_images` param.
+
 ---
 
-## 🟡 Phase 1 — remaining hygiene (low risk, small behavior deltas)
+## 🟡 Phase 1 — remaining
 
 | ID | Item | Notes |
 | :-- | :-- | :-- |
-| D7 | **Single-source the mandatory tags.** They're defined in both `shared/tags.js` (JS) and `deploy-direct.sh:~29` (bash strings). Owner/expires/squad can drift. | Emit the tag list from one place (e.g. a small JSON the script `jq`s and the Lambdas import), or at minimum cross-reference + a CI check. |
-| B3 | **Fix the stale tool contract.** Frontend `TOOLS`/`STEPS`/`SYSTEM_PROMPT` describe 3 services (checkout-api/merchant-api/payment-engine) and a required `core_images` param. Real `deploy_ecs` creates **one** `checkout` container and ignores `core_images`. | The model is prompted against a non-existent architecture. Align the schema + prompt with reality. |
-| S5 | **Sanitize client-facing errors + lock CORS.** `response.js` returns raw `${e.name}: ${e.message}` and sets `Access-Control-Allow-Origin: *`. | Return a generic error + a server-side log correlation id; restrict origin to `https://www.aplazo.ai` + `http://localhost:8080`. |
-| P7 | **Resolve `MOCK_MODE` ambiguity.** All Lambdas run `MOCK_MODE=false`; `mock-data.js` (104 lines) is dead in prod and has **drifted** from real output shapes (mock returns 3 services / different checkout URL format). | Either delete it, or keep deliberately for local dev and **document + re-sync** the shapes so it stays a faithful fixture. |
-| M2 | **Stop swallowing poll-loop errors.** The remaining `catch (_) {}` blocks in the restore loops hide throttling/permission failures. | Migrate those loops to `pollUntil` (already built in `aws-errors.js`) which logs transients at debug. Skipped in Phase 0 because the loops have early-error returns. |
+| S5 (rest) | **Sanitize client-facing error detail.** Handlers still return raw `${e.name}: ${e.message}` in `detail`. | Return a generic error + a server-side log correlation id. **Deliberately deferred**: the demo stepper surfaces this detail for debugging, and the cleaner home for it is the server-side agent (S1). Revisit alongside S1. |
+| — | **Adopt `pollUntil` in the restore loops.** M2 added logging, but the restore loops still hand-roll while/sleep because they have early-`return error()` paths `pollUntil` can't express. | Optional tidy-up; low value, real risk. Leave until there's a reason to touch them. |
 
 ---
 

@@ -32,7 +32,7 @@ exports.handler = async (event) => {
   const { sandbox_id, merchant_id } = parseBody(event);
   if (!sandbox_id || !merchant_id) return error(400, 'invalid_input', 'sandbox_id and merchant_id are required');
 
-  if (MOCK_MODE) return ok(mockConfigureMerchant({ merchantId: merchant_id }));
+  if (MOCK_MODE) return ok(mockConfigureMerchant({ merchantId: merchant_id, sandboxId: sandbox_id }));
 
   const serviceName = ecsService(sandbox_id);
   let serviceStatus = 'UNKNOWN';
@@ -50,7 +50,7 @@ exports.handler = async (event) => {
           runningCount = svc.runningCount || 0;
           if (runningCount >= 1) break;
         }
-      } catch (_) { /* transient */ }
+      } catch (e) { console.debug('configure_merchant service poll transient:', e?.name || e?.message); }
     }
   } catch (e) {
     console.error('configure_merchant probe failed', e);

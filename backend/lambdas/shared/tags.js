@@ -1,14 +1,20 @@
+// The 6 mandatory tag values come from infra/tags.env (the single source of
+// truth), which deploy-direct.sh injects into every tagging Lambda's env. The
+// literal fallbacks below must match tags.env and exist only for local dev.
 function mandatoryTags({ requester, sandboxId, merchantRef, integrationType }) {
   const owner = requester || process.env.DEFAULT_OWNER || 'francisco.lanuza@aplazo.mx';
   const expires = process.env.RESOURCE_EXPIRES || '2026-05-30';
   const squad = process.env.SQUAD || 'developer-experience';
+  const project = process.env.PROJECT_TAG || 'sandboxagent';
+  const team = process.env.TEAM_TAG || 'sandboxagent';
+  const environment = process.env.ENVIRONMENT_TAG || 'hackathon26';
   const tags = [
-    { Key: 'project',     Value: 'sandboxagent' },
-    { Key: 'team',        Value: 'sandboxagent' },
+    { Key: 'project',     Value: project },
+    { Key: 'team',        Value: team },
     { Key: 'squad',       Value: squad },
     { Key: 'owner',       Value: owner },
     { Key: 'expires',     Value: expires },
-    { Key: 'environment', Value: 'hackathon26' },
+    { Key: 'environment', Value: environment },
   ];
   if (sandboxId)        tags.push({ Key: 'sandbox-id', Value: sandboxId });
   if (merchantRef)      tags.push({ Key: 'merchant',   Value: String(merchantRef) });

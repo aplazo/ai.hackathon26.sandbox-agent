@@ -119,7 +119,7 @@ async function restoreRegularInstance({ sandbox_id, snapshotId, tags }) {
       if (status === 'failed' || status === 'incompatible-restore') {
         return error(500, 'rds_restore_failed', `RDS entered status "${status}"`);
       }
-    } catch (_) { /* transient */ }
+    } catch (e) { console.debug('restore_rds (instance) poll transient:', e?.name || e?.message); }
   }
 
   return ok({
@@ -205,7 +205,7 @@ async function restoreAuroraCluster({ sandbox_id, snapshotId, tags }) {
         if (status === 'available' && endpoint) break;
         if (status === 'failed') return error(500, 'aurora_restore_failed', 'Aurora cluster entered status "failed"');
       }
-    } catch (_) { /* transient */ }
+    } catch (e) { console.debug('restore_rds (aurora) poll transient:', e?.name || e?.message); }
   }
 
   return ok({
