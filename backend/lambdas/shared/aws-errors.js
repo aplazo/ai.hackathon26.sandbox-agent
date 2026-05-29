@@ -14,7 +14,7 @@
  */
 function isAwsError(e, ...patterns) {
   const hay = `${e?.name || ''} ${e?.message || ''}`;
-  return patterns.some((p) => new RegExp(p).test(hay));
+  return patterns.some((p) => hay.includes(p));
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -35,7 +35,7 @@ async function pollUntil(probe, { budgetMs, intervalMs, label = 'poll' }) {
       last = value;
       if (done) return value;
     } catch (e) {
-      console.debug(`${label} transient error:`, e?.name || e?.message);
+      console.debug(label, 'transient error:', e?.name || e?.message);
     }
   }
   return last;
