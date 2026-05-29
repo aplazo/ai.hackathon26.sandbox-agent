@@ -2,7 +2,7 @@
 
 > Brief para el team · Aplazo Hackathon 2026 · Track: Developer Experience & Internal Tooling
 >
-> **Última actualización:** 2026-05-21
+> **Última actualización:** 2026-05-29
 
 ---
 
@@ -131,6 +131,22 @@ El Lambda `restore_rds_snapshot` mira el ARN: si contiene `cluster-snapshot:` to
 
 ### 6. Auth-gated runtime config (sin secrets en HTML)
 El HTML publicado solo tiene `backendUrl`, `googleClientId`, `allowedDomain` (públicos por diseño). La Anthropic API key + BackendToken se fetchan en runtime via `/sandbox/config` después del Google login. Backend verifica el JWT contra `oauth2/tokeninfo` (aud + hd + email_verified + exp).
+
+---
+
+## Refactor de calidad de código — 2026-05-29 (en review)
+
+Se hizo una revisión de arquitectura completa (sin cambiar funcionalidad) y la limpieza resultante está abierta en **3 PRs**. Pendientes de review por el equipo antes de merge. La funcionalidad del demo NO cambia; es calidad de código, mantenibilidad y un par de bugs latentes.
+
+| PR | Branch | Qué trae | Cambia comportamiento |
+| :-- | :-- | :-- | :-: |
+| [**#1**](https://github.com/aplazo/ai.hackathon26.sandbox-agent/pull/1) | `refactor/phase0-shared-consolidation` | Capa `shared/` consolidada (nuevos `aws-errors.js`, `snapshot.js`, `naming.js`; adapters de tags; IDs con `crypto`); clientes AWS SDK como singletons a nivel módulo; borra `aws.js` muerto; **fix bug deploy script** (`warn` antes de definirse → crash con `set -e`) + deja de imprimir el token | No |
+| [**#2**](https://github.com/aplazo/ai.hackathon26.sandbox-agent/pull/2) | `fix/auth-fail-closed` | `checkBearer` falla **cerrado** si falta `BACKEND_TOKEN` (antes: fallaba abierto → endpoints públicos) | Sí (solo en caso de misconfig) |
+| [**#3**](https://github.com/aplazo/ai.hackathon26.sandbox-agent/pull/3) | `refactor/phase1-hygiene` | Logs en poll loops (no más `catch(_){}`); mocks re-sincronizados a la arquitectura real de 1 servicio; **tags 6-obligatorios single-source** en `infra/tags.env`; CORS configurable por env; contrato de tools del frontend alineado a la realidad (quita el `core_images` fantasma) | No |
+
+**Orden de merge:** #1 → #3 (#3 está stacked sobre #1). #2 es independiente, mergea cuando sea. Detalle técnico completo + backlog de lo que sigue (Phase 2 seguridad, Phase 3 escalabilidad) en [`REFACTOR-BACKLOG.md`](./REFACTOR-BACKLOG.md) *(aterriza con el PR #1)*.
+
+**Diferido a propósito (en backlog, NO en estos PRs):** los hallazgos de seguridad que sí cambian comportamiento — secrets que llegan al browser (S1), token único compartido (S3), orquestación client-side (S4) — quedan documentados para sign-off explícito, no se tocaron.
 
 ---
 
