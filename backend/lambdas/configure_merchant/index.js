@@ -32,7 +32,7 @@ exports.handler = async (event) => {
   const { sandbox_id, merchant_id } = parseBody(event);
   if (!sandbox_id || !merchant_id) return error(400, 'invalid_input', 'sandbox_id and merchant_id are required');
 
-  if (MOCK_MODE) return ok(mockConfigureMerchant({ merchantId: merchant_id }));
+  if (MOCK_MODE) return ok(mockConfigureMerchant({ merchantId: merchant_id, sandboxId: sandbox_id }));
 
   const serviceName = ecsService(sandbox_id);
   let serviceStatus = 'UNKNOWN';
