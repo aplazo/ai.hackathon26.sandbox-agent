@@ -9,6 +9,8 @@
 >
 > **Code-quality refactor in review (2026-05-29):** a full architecture review produced 3 open PRs (#1 Phase 0 shared-layer consolidation + deploy-script fixes, #2 fail-closed auth, #3 Phase 1 hygiene) — all **no functionality change** except the flagged fail-closed auth. Merge order #1 → #3 (stacked); #2 independent. Full technical detail + remaining backlog (Phase 2 security, Phase 3 scale) in [`REFACTOR-BACKLOG.md`](./REFACTOR-BACKLOG.md). Team-facing summary in [`STATUS.md`](./STATUS.md#refactor-de-calidad-de-código--2026-05-29-en-review).
 
+> **⚠️ Architecture pivot (2026-05-31) — read before extending this system:** The business deliverable ("move *all* merchants off staging into a sandbox, ~1 month, DevOps-owned") is **NOT** what this repo built. This repo = N **ephemeral per-merchant** stacks provisioned by an AI agent. The deliverable = **one shared, always-on** environment. The agent is being **demoted to optional internal tooling**, not the merchant-facing path. Full reasoning, decisions, tradeoffs, and plan in [`SANDBOX-ENVIRONMENT-DESIGN.md`](./SANDBOX-ENVIRONMENT-DESIGN.md). See §13 below for the short version.
+
 ---
 
 ## 0. Permissions Reality Check (updated)
@@ -496,3 +498,37 @@ The hackathon project is **demo-complete**. Each per-sandbox AWS resource is rea
 What's left (section 3) is mostly polish + productionization. The bones are solid.
 
 When in doubt, **try the AWS call** — the error message tells you exactly what's blocked. Workarounds for the SCP issues we hit are documented above.
+
+---
+
+## 13. Post-hackathon architecture finding (2026-05-31)
+
+> **Full doc:** [`SANDBOX-ENVIRONMENT-DESIGN.md`](./SANDBOX-ENVIRONMENT-DESIGN.md). This section is the canonical pointer; that doc is the detail.
+
+### The finding
+
+Stakeholder goal: **move *all* merchants off the staging environment into a sandbox**, ~1 month, **owned by DevOps**, well past demo-grade. Working through it surfaced that **two different products were hiding under the word "sandbox":**
+
+- **What this repo built:** N **ephemeral, per-merchant** stacks (one Aurora cluster + ECS service + ALB rule *each*), provisioned on demand by an **AI agent** from a natural-language prompt.
+- **What the deliverable actually is:** **one shared, always-on** environment, multi-tenant by `merchant_id`, that every merchant points at — the Stripe/PayPal "test mode" model.
+
+Per-merchant-Aurora does not scale to "all merchants" (cost), and a prompt-driven provisioner is the wrong thing to hand DevOps to be on-call for. **The shared environment is the production deliverable; the agent is demoted to optional internal tooling** for spinning throwaway isolated stacks.
+
+### Confirmed decisions (stakeholder, 2026-05-31)
+
+1. **One shared sandbox env**, multi-tenant by `merchant_id` (not per-merchant ephemeral).
+2. Root cause of staging pain: **internal deploys break it** + **merchant test traffic destabilizes it** → fix = a stable env with its **own release pipeline pinned to prod releases**, isolated from internal deploys.
+3. **Synthetic / anonymized seed data** — the staging snapshot `apzdbstg-hackathon-local` is **retired** for this purpose. Real customer data in an externally-reachable sandbox is a **compliance/data-leak event**, not a polish item.
+4. **New environment via Pulumi**; this repo's agent stays as optional internal tooling, not the prod path.
+
+### Security re-mapping
+
+Choosing the shared model makes most of the Phase 2 backlog **moot**: S1 (secrets to browser), S3 (static token), S4 (client orchestration) are all agent-control-plane properties. **S2 (fail-closed auth) still ships.** New requirements for an external env: WAF + per-merchant rate limits, scoped test credentials, dedicated VPC with **no peering to prod/staging data**, Secrets Manager (not env-var/`/tmp`), and a **hard invariant that the sandbox can never reach real money / KYC / SMS** (enforced at network *and* config).
+
+### Operational note (timing)
+
+Today is **2026-05-31**; the hackathon per-sandbox resources carry `expires=2026-05-30` (HANDOFF §2.7), so the DevOps reaper may already be tearing them down. Don't assume the demo infra is still live — re-provision via `deploy-direct.sh` if you need it.
+
+### Next action
+
+Phase 0 discovery (3 days, blocking): enumerate the merchant **integration contract** + downstream dependency map before any code. See design doc §7 and §10.
