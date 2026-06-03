@@ -156,7 +156,7 @@ The hackathon demo is feature-complete (real per-sandbox AWS isolation + real Ap
 - **Pool of pre-warmed snapshots** — current Aurora restore takes ~5-7 min. Maintain 2-3 pre-restored clusters that get assigned on demand → sub-30s provisioning.
 - **Backend proxy for Anthropic API** — currently the Anthropic key reaches the browser (fetched via `/sandbox/config` after Google login). Better: proxy the Anthropic call through a Lambda so the key never leaves AWS. ~30 min refactor.
 - **Cognito SSO for the HTML** — the current GIS-only gate is client-side. A real production deploy should put Cognito + Google Workspace in front of the HTML Publisher too.
-- **CI/CD pipeline** — GitHub Actions on merge to `main` runs `deploy-direct.sh`. Currently it's manual.
+- **CI/CD pipeline** — ✅ shipped in PR #6: `.github/workflows/deploy-agent.yml` runs `deploy-direct.sh` on push to `master` via GitHub OIDC, gated on the `hackathon-poc` GitHub Environment (manual reviewer). One-time activation: `infra/scripts/setup-gha-oidc.sh` + create the GitHub Environment.
 - **Step Functions** instead of polling-inside-Lambda — the current fire-and-poll-short pattern (≤25s per tool) hits the 30s API GW limit. Step Functions would let us properly orchestrate the long-running Aurora restore.
 - **Observability** — CloudWatch dashboards, cost-per-sandbox tracking via the `sandbox-id` tag, alerting on stuck/failed provisioning.
 - **Frontend modernization** — current single-file HTML is fine for hackathon; Angular 20 SPA was post-hackathon item in the PRD.
@@ -259,7 +259,7 @@ cd infra
 ./scripts/deploy-direct.sh
 ```
 
-This script reads `/tmp/sandboxagent-backend-token.txt` and `/tmp/sandboxagent-anthropic-key.txt`. If either is missing, it warns. It creates IAM role, DynamoDB table, 8 Lambdas, HTTP API, integrations, routes, invoke permissions — all idempotently.
+This script reads `BACKEND_TOKEN` / `ANTHROPIC_API_KEY` from Secrets Manager (`sandboxagent/{backend-token,anthropic-key}`), falling back to the deprecated `/tmp/*.txt` files if absent (run `infra/scripts/bootstrap-secrets.sh` once to migrate). It creates IAM role, DynamoDB table, 8 Lambdas, HTTP API, integrations, routes, invoke permissions — all idempotently. Set `PROFILE=""` to use the default credential chain (CI/OIDC) instead of the `hackathon-poc` SSO profile.
 
 ### 5.2 Update a single Lambda
 
@@ -281,7 +281,7 @@ aws logs tail /aws/lambda/sandboxagent-<name> --follow --profile hackathon-poc -
 ### 5.4 Test the API directly
 
 ```bash
-TOKEN=$(cat /tmp/sandboxagent-backend-token.txt)
+TOKEN=$(aws secretsmanager get-secret-value --secret-id sandboxagent/backend-token --query SecretString --output text --profile hackathon-poc --region us-east-1)
 curl -s -X POST 'https://f0ndmxurpk.execute-api.us-east-1.amazonaws.com/sandbox/sandbox/<route>' \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
