@@ -58,10 +58,12 @@ PRD v1.6 (Google Doc): https://docs.google.com/document/d/1ik5-MMWy6xAygyAH-GNyc
 
 ### 2.3 Secrets
 
+**Source of truth = AWS Secrets Manager** (since 2026-06-03). `deploy-direct.sh` reads `sandboxagent/backend-token` and `sandboxagent/anthropic-key` from Secrets Manager and injects them as Lambda env vars at deploy time; the `/tmp/*.txt` files are a deprecated local fallback only. Run `infra/scripts/bootstrap-secrets.sh` once to seed/rotate. (Follow-up: read at Lambda cold-start via the AWS Parameters & Secrets extension so they leave the env-var surface entirely — see `PRODUCTION-DEPLOYMENT.md` §5.)
+
 | Secret | Where it lives | How to rotate |
 | :-- | :-- | :-- |
-| Anthropic API key | env var `ANTHROPIC_API_KEY` of `sandboxagent-fetch-config` Lambda · local backup at `/tmp/sandboxagent-anthropic-key.txt` | `aws lambda update-function-configuration --function-name sandboxagent-fetch-config --environment 'Variables={ANTHROPIC_API_KEY=...,BACKEND_TOKEN=...,GOOGLE_CLIENT_ID=...,ALLOWED_DOMAIN=aplazo.mx,MODEL=claude-sonnet-4-20250514,MAX_ITERATIONS=12}'` |
-| BackendToken (Bearer) | env var `BACKEND_TOKEN` of all 8 Lambdas · local at `/tmp/sandboxagent-backend-token.txt` · samconfig.toml | Same pattern — regenerate with `openssl rand -hex 32`, update all Lambdas + samconfig.toml |
+| Anthropic API key | Secrets Manager `sandboxagent/anthropic-key` → injected as env var of `sandboxagent-fetch-config` | `ANTHROPIC_API_KEY=<new> infra/scripts/bootstrap-secrets.sh` then re-run `deploy-direct.sh` |
+| BackendToken (Bearer) | Secrets Manager `sandboxagent/backend-token` → injected as env var of all 8 Lambdas | `BACKEND_TOKEN=$(openssl rand -hex 32) infra/scripts/bootstrap-secrets.sh` then re-run `deploy-direct.sh` |
 | Google OAuth Client ID | hardcoded in HTML (public by design) + env of `fetch-config` Lambda | Regenerate in GCP Console, update both places |
 
 The HTML source has **zero secrets** — they're fetched at runtime after Google login. This is the hackathon-compliance fix that's already shipped.
