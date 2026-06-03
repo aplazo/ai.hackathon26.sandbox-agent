@@ -28,7 +28,6 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  AWS_ACCOUNT_ID: "332730082760"
 
 jobs:
   test:
@@ -58,16 +57,18 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::332730082760:role/gha-sandboxagent-deploy
+          # Repo variable (Settings → Secrets and variables → Actions → Variables).
+          # setup-gha-oidc.sh prints the role ARN to set here.
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy
         env:
           PROFILE: ""          # empty → deploy-direct.sh uses the OIDC credential chain
           REGION: ${{ env.AWS_REGION }}
-        run: |
-          cd infra
-          ./scripts/deploy-direct.sh
+        # Absolute path: deploy-direct.sh resolves its own paths via BASH_SOURCE,
+        # so it runs correctly regardless of working directory.
+        run: bash "$GITHUB_WORKSPACE/infra/scripts/deploy-direct.sh"
 
       - name: Smoke test (resolve-snapshot is read-only)
         run: |

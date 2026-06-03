@@ -15,7 +15,7 @@ set -euo pipefail
 
 PROFILE="${PROFILE:-hackathon-poc}"
 REGION="${REGION:-us-east-1}"
-ACCOUNT_ID="${ACCOUNT_ID:-332730082760}"
+ACCOUNT_ID="${ACCOUNT_ID:-}"   # resolved from STS below (after aw() is defined)
 STACK_PREFIX="sandboxagent"
 ROLE_NAME="${STACK_PREFIX}-lambda-role"
 TABLE_NAME="${STACK_PREFIX}-sessions"
@@ -50,6 +50,9 @@ read_secret() {
 
 SECRET_BACKEND_TOKEN="${SECRET_BACKEND_TOKEN:-sandboxagent/backend-token}"
 SECRET_ANTHROPIC_KEY="${SECRET_ANTHROPIC_KEY:-sandboxagent/anthropic-key}"
+
+# Resolve the account ID from the caller — never hardcode it.
+ACCOUNT_ID="${ACCOUNT_ID:-$(aw sts get-caller-identity --query Account --output text)}"
 
 # Mandatory tags (SCP enforced at creation time for IAM resources)
 OWNER="francisco.lanuza@aplazo.mx"

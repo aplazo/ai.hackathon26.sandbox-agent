@@ -239,7 +239,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::332730082760:role/gha-sandboxagent-deploy
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}   # repo variable, not a hardcoded ARN
           aws-region: us-east-1
       - name: Pull secrets from Secrets Manager   # replaces /tmp files
         run: |
