@@ -15,7 +15,7 @@ set -euo pipefail
 
 PROFILE="${PROFILE:-hackathon-poc}"
 REGION="${REGION:-us-east-1}"
-ACCOUNT_ID="${ACCOUNT_ID:-332730082760}"
+ACCOUNT_ID="${ACCOUNT_ID:-}"   # resolved from STS below (after aw() is defined)
 STACK_PREFIX="sandboxagent"
 ROLE_NAME="${STACK_PREFIX}-lambda-role"
 TABLE_NAME="${STACK_PREFIX}-sessions"
@@ -29,7 +29,30 @@ log() { printf '\n\033[1;36m== %s ==\033[0m\n' "$*"; }
 ok()  { printf '   \033[1;32m✓\033[0m %s\n' "$*"; }
 warn(){ printf '   \033[1;33m!\033[0m %s\n' "$*"; }
 fail(){ printf '   \033[1;31m✗\033[0m %s\n' "$*"; exit 1; }
-aw()  { aws --profile "$PROFILE" --region "$REGION" "$@"; }
+# Omit --profile when PROFILE is empty (CI/OIDC uses the default credential chain).
+aw()  { if [[ -n "$PROFILE" ]]; then aws --profile "$PROFILE" --region "$REGION" "$@"; else aws --region "$REGION" "$@"; fi; }
+
+# Resolve a secret: Secrets Manager first, then a legacy /tmp file (with a
+# deprecation warning). An explicit env var, if set, short-circuits this entirely
+# (CI sets the env vars after reading SM itself). Run ./bootstrap-secrets.sh once
+# to migrate the /tmp files into Secrets Manager and retire the laptop dependency.
+read_secret() {
+  local secret_id="$1" legacy_path="$2" val
+  val=$(aw secretsmanager get-secret-value --secret-id "$secret_id" \
+        --query SecretString --output text 2>/dev/null || true)
+  if [[ -n "$val" && "$val" != "None" ]]; then printf '%s' "$val"; return; fi
+  if [[ -f "$legacy_path" ]]; then
+    warn "secret '$secret_id' not in Secrets Manager — using legacy $legacy_path (run bootstrap-secrets.sh to migrate)"
+    cat "$legacy_path"; return
+  fi
+  printf ''
+}
+
+SECRET_BACKEND_TOKEN="${SECRET_BACKEND_TOKEN:-sandboxagent/backend-token}"
+SECRET_ANTHROPIC_KEY="${SECRET_ANTHROPIC_KEY:-sandboxagent/anthropic-key}"
+
+# Resolve the account ID from the caller — never hardcode it.
+ACCOUNT_ID="${ACCOUNT_ID:-$(aw sts get-caller-identity --query Account --output text)}"
 
 # Mandatory tags (SCP enforced at creation time for IAM resources)
 OWNER="francisco.lanuza@aplazo.mx"
@@ -40,9 +63,10 @@ TAGS_LAMBDA="project=sandboxagent,team=sandboxagent,squad=${SQUAD},owner=${OWNER
 TAGS_DDB="$TAGS_IAM"
 
 # Environment variables for all Lambdas
-BACKEND_TOKEN="${BACKEND_TOKEN:-$(cat /tmp/sandboxagent-backend-token.txt 2>/dev/null || true)}"
+BACKEND_TOKEN="${BACKEND_TOKEN:-$(read_secret "$SECRET_BACKEND_TOKEN" /tmp/sandboxagent-backend-token.txt)}"
 if [[ -z "$BACKEND_TOKEN" ]]; then
-  echo "ERROR: BACKEND_TOKEN not set and /tmp/sandboxagent-backend-token.txt missing"
+  echo "ERROR: BACKEND_TOKEN not set, not in Secrets Manager ($SECRET_BACKEND_TOKEN), and /tmp/sandboxagent-backend-token.txt missing"
+  echo "       Run ./bootstrap-secrets.sh to seed Secrets Manager."
   exit 1
 fi
 
@@ -63,7 +87,7 @@ else
 fi
 
 # Auth-gated config endpoint secrets — only attached to fetch_config Lambda
-ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-$(cat /tmp/sandboxagent-anthropic-key.txt 2>/dev/null || true)}"
+ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-$(read_secret "$SECRET_ANTHROPIC_KEY" /tmp/sandboxagent-anthropic-key.txt)}"
 GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:-627677728138-b4b39v4ie3dn3qa0lm6lg01mtcao7otv.apps.googleusercontent.com}"
 ALLOWED_DOMAIN="${ALLOWED_DOMAIN:-aplazo.mx}"
 MODEL="${MODEL:-claude-sonnet-4-20250514}"

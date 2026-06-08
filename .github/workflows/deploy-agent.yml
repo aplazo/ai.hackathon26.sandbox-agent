@@ -1,0 +1,88 @@
+name: deploy-agent
+
+# Deploys the SandboxAgent control plane (8 Lambdas + HTTP API + DynamoDB) to the
+# POC account via the existing idempotent deploy-direct.sh. No SAM/S3 (SCP-blocked).
+#
+# Auth: GitHub OIDC → the gha-sandboxagent-deploy role (run infra/scripts/setup-gha-oidc.sh
+# once to create it). No long-lived AWS keys in GitHub.
+# Secrets: deploy-direct.sh reads BACKEND_TOKEN / ANTHROPIC_API_KEY from Secrets Manager
+# (run infra/scripts/bootstrap-secrets.sh once to seed them). No /tmp files.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'backend/**'
+      - 'infra/**'
+      - 'checkout-app/**'
+      - '.github/workflows/deploy-agent.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-agent
+  cancel-in-progress: false
+
+permissions:
+  id-token: write   # mint the OIDC token for AWS
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install backend deps
+        run: cd backend && npm ci
+      # No test framework is configured yet; gate on syntax instead of inventing
+      # an `npm test`. Replace with `npm test` once a suite exists (see backlog).
+      - name: Syntax check all Lambda sources
+        run: |
+          find backend/lambdas checkout-app -name '*.js' -print0 \
+            | xargs -0 -n1 node --check
+          echo "All JS sources parse."
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: hackathon-poc   # GitHub Environment — add required reviewers here
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Repo variable (Settings → Secrets and variables → Actions → Variables).
+          # setup-gha-oidc.sh prints the role ARN to set here.
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy
+        env:
+          PROFILE: ""          # empty → deploy-direct.sh uses the OIDC credential chain
+          REGION: ${{ env.AWS_REGION }}
+        # Absolute path: deploy-direct.sh resolves its own paths via BASH_SOURCE,
+        # so it runs correctly regardless of working directory.
+        run: bash "$GITHUB_WORKSPACE/infra/scripts/deploy-direct.sh"
+
+      - name: Smoke test (resolve-snapshot is read-only)
+        run: |
+          API_ID=$(aws apigatewayv2 get-apis --region "$AWS_REGION" \
+            --query "Items[?Name=='sandboxagent-api'].ApiId" --output text)
+          if [[ -z "$API_ID" || "$API_ID" == "None" ]]; then
+            echo "::error::could not resolve sandboxagent-api ApiId"; exit 1
+          fi
+          API_URL="https://${API_ID}.execute-api.${AWS_REGION}.amazonaws.com/sandbox/sandbox"
+          TOKEN=$(aws secretsmanager get-secret-value --region "$AWS_REGION" \
+            --secret-id sandboxagent/backend-token --query SecretString --output text)
+          echo "Smoke testing $API_URL/resolve-snapshot"
+          curl -fsS -X POST "$API_URL/resolve-snapshot" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{"merchant_id":"ci_smoke"}' >/dev/null
+          echo "Smoke test passed."

@@ -58,10 +58,12 @@ PRD v1.6 (Google Doc): https://docs.google.com/document/d/1ik5-MMWy6xAygyAH-GNyc
 
 ### 2.3 Secrets
 
+**Source of truth = AWS Secrets Manager** (since 2026-06-03). `deploy-direct.sh` reads `sandboxagent/backend-token` and `sandboxagent/anthropic-key` from Secrets Manager and injects them as Lambda env vars at deploy time; the `/tmp/*.txt` files are a deprecated local fallback only. Run `infra/scripts/bootstrap-secrets.sh` once to seed/rotate. (Follow-up: read at Lambda cold-start via the AWS Parameters & Secrets extension so they leave the env-var surface entirely — see `PRODUCTION-DEPLOYMENT.md` §5.)
+
 | Secret | Where it lives | How to rotate |
 | :-- | :-- | :-- |
-| Anthropic API key | env var `ANTHROPIC_API_KEY` of `sandboxagent-fetch-config` Lambda · local backup at `/tmp/sandboxagent-anthropic-key.txt` | `aws lambda update-function-configuration --function-name sandboxagent-fetch-config --environment 'Variables={ANTHROPIC_API_KEY=...,BACKEND_TOKEN=...,GOOGLE_CLIENT_ID=...,ALLOWED_DOMAIN=aplazo.mx,MODEL=claude-sonnet-4-20250514,MAX_ITERATIONS=12}'` |
-| BackendToken (Bearer) | env var `BACKEND_TOKEN` of all 8 Lambdas · local at `/tmp/sandboxagent-backend-token.txt` · samconfig.toml | Same pattern — regenerate with `openssl rand -hex 32`, update all Lambdas + samconfig.toml |
+| Anthropic API key | Secrets Manager `sandboxagent/anthropic-key` → injected as env var of `sandboxagent-fetch-config` | `ANTHROPIC_API_KEY=<new> infra/scripts/bootstrap-secrets.sh` then re-run `deploy-direct.sh` |
+| BackendToken (Bearer) | Secrets Manager `sandboxagent/backend-token` → injected as env var of all 8 Lambdas | `BACKEND_TOKEN=$(openssl rand -hex 32) infra/scripts/bootstrap-secrets.sh` then re-run `deploy-direct.sh` |
 | Google OAuth Client ID | hardcoded in HTML (public by design) + env of `fetch-config` Lambda | Regenerate in GCP Console, update both places |
 
 The HTML source has **zero secrets** — they're fetched at runtime after Google login. This is the hackathon-compliance fix that's already shipped.
@@ -154,7 +156,8 @@ The hackathon demo is feature-complete (real per-sandbox AWS isolation + real Ap
 - **Pool of pre-warmed snapshots** — current Aurora restore takes ~5-7 min. Maintain 2-3 pre-restored clusters that get assigned on demand → sub-30s provisioning.
 - **Backend proxy for Anthropic API** — currently the Anthropic key reaches the browser (fetched via `/sandbox/config` after Google login). Better: proxy the Anthropic call through a Lambda so the key never leaves AWS. ~30 min refactor.
 - **Cognito SSO for the HTML** — the current GIS-only gate is client-side. A real production deploy should put Cognito + Google Workspace in front of the HTML Publisher too.
-- **CI/CD pipeline** — GitHub Actions on merge to `main` runs `deploy-direct.sh`. Currently it's manual.
+- **CI/CD pipeline** — ✅ shipped in PR #6: `.github/workflows/deploy-agent.yml` runs `deploy-direct.sh` on push to `master` via GitHub OIDC, gated on the `hackathon-poc` GitHub Environment (manual reviewer). One-time activation: `infra/scripts/setup-gha-oidc.sh` + create the GitHub Environment. **Security review (2026-06-03):** no high-confidence vulnerabilities; OIDC trust is correctly pinned to `repo:aplazo/ai.hackathon26.sandbox-agent:environment:hackathon-poc`. One defense-in-depth follow-up below.
+- **Harden the CI deploy role (defense-in-depth, not blocking)** — `gha-deploy-permissions-policy.json` lets the deploy role `iam:PutRolePolicy` on `sandboxagent-*` (which includes the `PassRole`-able `sandboxagent-lambda-role`), a textbook put-role-policy + pass-role + Lambda escalation primitive *if* the gated deploy job is ever compromised. Mitigated today by the required-reviewer Environment + OIDC repo/env pinning. To close it: attach a **permissions boundary** to `sandboxagent-lambda-role`, or scope `PutRolePolicy` so it cannot target that role; and tighten the region-wide `apigateway:*` grant toward `/apis` + the specific API ARN.
 - **Step Functions** instead of polling-inside-Lambda — the current fire-and-poll-short pattern (≤25s per tool) hits the 30s API GW limit. Step Functions would let us properly orchestrate the long-running Aurora restore.
 - **Observability** — CloudWatch dashboards, cost-per-sandbox tracking via the `sandbox-id` tag, alerting on stuck/failed provisioning.
 - **Frontend modernization** — current single-file HTML is fine for hackathon; Angular 20 SPA was post-hackathon item in the PRD.
@@ -257,7 +260,7 @@ cd infra
 ./scripts/deploy-direct.sh
 ```
 
-This script reads `/tmp/sandboxagent-backend-token.txt` and `/tmp/sandboxagent-anthropic-key.txt`. If either is missing, it warns. It creates IAM role, DynamoDB table, 8 Lambdas, HTTP API, integrations, routes, invoke permissions — all idempotently.
+This script reads `BACKEND_TOKEN` / `ANTHROPIC_API_KEY` from Secrets Manager (`sandboxagent/{backend-token,anthropic-key}`), falling back to the deprecated `/tmp/*.txt` files if absent (run `infra/scripts/bootstrap-secrets.sh` once to migrate). It creates IAM role, DynamoDB table, 8 Lambdas, HTTP API, integrations, routes, invoke permissions — all idempotently. Set `PROFILE=""` to use the default credential chain (CI/OIDC) instead of the `hackathon-poc` SSO profile.
 
 ### 5.2 Update a single Lambda
 
@@ -279,7 +282,7 @@ aws logs tail /aws/lambda/sandboxagent-<name> --follow --profile hackathon-poc -
 ### 5.4 Test the API directly
 
 ```bash
-TOKEN=$(cat /tmp/sandboxagent-backend-token.txt)
+TOKEN=$(aws secretsmanager get-secret-value --secret-id sandboxagent/backend-token --query SecretString --output text --profile hackathon-poc --region us-east-1)
 curl -s -X POST 'https://f0ndmxurpk.execute-api.us-east-1.amazonaws.com/sandbox/sandbox/<route>' \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
